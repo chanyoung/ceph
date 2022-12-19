@@ -722,38 +722,43 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
   const char* s3select_resource_id = "resourcse-id";
   const char* s3select_json_error = "json-Format-Error";
 
+  //parsing the SQL statement
   s3select_syntax.parse_query(m_sql_query.c_str());
+  //initializing json processor
   m_s3_json_object.set_json_query(&s3select_syntax);
 
-  if (output_row_delimiter.size()) {
-    output_row_delimiter = *output_row_delimiter.c_str();
-  }
-  
+  //the JSON data-type should be(currently) only DOCUMENT
   if(m_json_datatype.compare("DOCUMENT") != 0) {
+    const char* s3select_json_error_msg = "s3-select query: wrong json dataType should use DOCUMENT; ";
     m_aws_response_handler.send_error_response(s3select_json_error,
-        s3select_syntax.get_error_description().c_str(),
+        s3select_json_error_msg,
         s3select_resource_id);
-    ldpp_dout(this, 10) << "s3-select query: wrong json format; {" << s3select_syntax.get_error_description() << "}" << dendl;
-    return -1;
+    ldpp_dout(this, 10) << s3select_json_error_msg << dendl;
+    return -EINVAL;
   } 
 
   if (s3select_syntax.get_error_description().empty() == false) {
-    //error-flow (syntax-error)
+    //SQL statement is wrong(syntax).
     m_aws_response_handler.send_error_response(s3select_syntax_error,
         s3select_syntax.get_error_description().c_str(),
         s3select_resource_id);
     ldpp_dout(this, 10) << "s3-select query: failed to prase query; {" << s3select_syntax.get_error_description() << "}" << dendl;
-    return -1;
+    return -EINVAL;
   }
   
   if (s->obj_size == 0) {
+    //in case of empty object the s3select-function returns a correct "empty" result(for aggregation and non-aggregation queries).
     status = run_s3select_on_json(m_sql_query.c_str(), nullptr, 0);
+    if(status<0)
+      return -EINVAL;
   } else {
     auto bl_len = bl.get_num_buffers();
     int i=0;
+    //loop on chunks
     for(auto& it : bl.buffers()) {
       ldpp_dout(this, 10) << "processing segment " << i << " out of " << bl_len << " off " << ofs
                           << " len " << len << " obj-size " << s->obj_size << dendl;
+      //skipping the empty chunks
       if(it.length() == 0) {
         ldpp_dout(this, 10) << "s3select:it->_len is zero. segment " << i << " out of " << bl_len
                             <<  " obj-size " << s->obj_size << dendl;
@@ -762,13 +767,21 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
       m_aws_response_handler.update_processed_size(it.length());
       status = run_s3select_on_json(m_sql_query.c_str(), &(it)[0], it.length());
       if(status<0) {
+	status = -EINVAL;
         break;
       }
       i++;
     }
   }
-  status = run_s3select_on_json(m_sql_query.c_str(), nullptr, 0);
+
   if (m_aws_response_handler.get_processed_size() == s->obj_size) {
+    //flush the internal JSON buffer(upon last chunk)
+    status = run_s3select_on_json(m_sql_query.c_str(), nullptr, 0);
+    if(status<0)
+    {
+      return -EINVAL;
+    }
+
     if (status >=0) {
       m_aws_response_handler.init_stats_response();
       m_aws_response_handler.send_stats_response();

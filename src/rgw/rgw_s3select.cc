@@ -685,6 +685,8 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
   
   if (s->obj_size == 0) {
     status = run_s3select(m_sql_query.c_str(), nullptr, 0);
+    if(status<0)
+      return -EINVAL;
   } else {
     auto bl_len = bl.get_num_buffers();
     int i=0;
@@ -698,18 +700,24 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
       }
       m_aws_response_handler.update_processed_size(it.length());
       status = run_s3select(m_sql_query.c_str(), &(it)[0], it.length());
-      if(status<0) {
+      if(status<0 || status == 2) {
         break;
       }
       i++;
     }
   }
-  if (m_aws_response_handler.get_processed_size() == s->obj_size) {
+  if (m_aws_response_handler.get_processed_size() == s->obj_size || status == 2) {
+    if (status == 2)
+    {
+      ldpp_dout(this, 10) << "s3select : reached the limit :" << m_aws_response_handler.get_processed_size()  << dendl;
+    }
+
     if (status >=0) {
       m_aws_response_handler.init_stats_response();
       m_aws_response_handler.send_stats_response();
       m_aws_response_handler.init_end_response();
     }
+    if(status == 2) {status = -2;}//TODO need to stop fetching chunks
   }
   return status;
 }
@@ -774,7 +782,11 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
     }
   }
 
-  if (m_aws_response_handler.get_processed_size() == s->obj_size) {
+  if (m_aws_response_handler.get_processed_size() == s->obj_size || status == 2) {
+    if (status == 2)
+    {
+      ldpp_dout(this, 10) << "s3select : reached the limit :" << m_aws_response_handler.get_processed_size()  << dendl;
+    }
     //flush the internal JSON buffer(upon last chunk)
     status = run_s3select_on_json(m_sql_query.c_str(), nullptr, 0);
     if(status<0)
@@ -787,6 +799,7 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
       m_aws_response_handler.send_stats_response();
       m_aws_response_handler.init_end_response();
     }
+    if(status == 2) {status = -2;}//TODO need to stop fetching chunks
   }
   return status;
 }

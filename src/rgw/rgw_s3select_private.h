@@ -223,7 +223,7 @@ private:
 
   int json_processing(bufferlist& bl, off_t ofs, off_t len);
 
-  int run_s3select(const char* query, const char* input, size_t input_length);
+  int run_s3select_on_csv(const char* query, const char* input, size_t input_length);
 
   int run_s3select_on_parquet(const char* query);
 

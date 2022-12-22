@@ -297,13 +297,10 @@ int RGWSelectObj_ObjStore_S3::get_params(optional_yield y)
   if(m_s3select_query.empty() == false) {
     return 0;
   }
-  if(s->object->get_name().find(".parquet") != std::string::npos) { //aws cli is missing the parquet
-#ifdef _ARROW_EXIST
-    m_parquet_type = true;
-#else
+#ifndef _ARROW_EXIST
+    m_parquet_type = false;
     ldpp_dout(this, 10) << "arrow library is not installed" << dendl;
 #endif
-  }
   
   //retrieve s3-select query from payload
   bufferlist data;
@@ -328,7 +325,7 @@ int RGWSelectObj_ObjStore_S3::get_params(optional_yield y)
   return RGWGetObj_ObjStore_S3::get_params(y);
 }
 
-int RGWSelectObj_ObjStore_S3::run_s3select(const char* query, const char* input, size_t input_length)
+int RGWSelectObj_ObjStore_S3::run_s3select_on_csv(const char* query, const char* input, size_t input_length)
 {
   int status = 0;
   uint32_t length_before_processing, length_post_processing;
@@ -469,11 +466,37 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_parquet(const char* query)
 
 int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char* input, size_t input_length)
 {
-    int status = 0;
+  int status = 0;
   
     uint32_t length_before_processing, length_post_processing;
-    const char* s3select_resource_id = "resourcse-id";
     const char* s3select_processTime_error = "s3select-ProcessingTime-Error";
+    const char* s3select_syntax_error = "s3select-Syntax-Error";
+    const char* s3select_resource_id = "resourcse-id";
+    const char* s3select_json_error = "json-Format-Error";
+
+    //parsing the SQL statement
+    s3select_syntax.parse_query(m_sql_query.c_str());
+    //initializing json processor
+    m_s3_json_object.set_json_query(&s3select_syntax);
+
+    //the JSON data-type should be(currently) only DOCUMENT
+    if(m_json_datatype.compare("DOCUMENT") != 0) {
+      const char* s3select_json_error_msg = "s3-select query: wrong json dataType should use DOCUMENT; ";
+      m_aws_response_handler.send_error_response(s3select_json_error,
+        s3select_json_error_msg,
+        s3select_resource_id);
+      ldpp_dout(this, 10) << s3select_json_error_msg << dendl;
+      return -EINVAL;
+    } 
+
+    if (s3select_syntax.get_error_description().empty() == false) {
+    //SQL statement is wrong(syntax).
+      m_aws_response_handler.send_error_response(s3select_syntax_error,
+        s3select_syntax.get_error_description().c_str(),
+        s3select_resource_id);
+      ldpp_dout(this, 10) << "s3-select query: failed to prase query; {" << s3select_syntax.get_error_description() << "}" << dendl;
+      return -EINVAL;
+    }
     
     m_aws_response_handler.init_response();
     if (input == nullptr) {
@@ -507,16 +530,17 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
     }
     chunk_number++;
 
-  if (length_post_processing-length_before_processing != 0) {
-    m_aws_response_handler.send_success_response();
-  } else {
-    m_aws_response_handler.send_continuation_response();
-  }
-  if (enable_progress == true) {
-    m_aws_response_handler.init_progress_response();
-    m_aws_response_handler.send_progress_response();
-  }
-  return status;
+    if (length_post_processing-length_before_processing != 0) {
+      m_aws_response_handler.send_success_response();
+    } else {
+      m_aws_response_handler.send_continuation_response();
+    }
+    if (enable_progress == true) {
+      m_aws_response_handler.init_progress_response();
+      m_aws_response_handler.send_progress_response();
+    }
+
+    return status;
 }
 
 int RGWSelectObj_ObjStore_S3::handle_aws_cli_parameters(std::string& sql_query)
@@ -535,6 +559,21 @@ int RGWSelectObj_ObjStore_S3::handle_aws_cli_parameters(std::string& sql_query)
     boost::replace_all(m_s3select_query, LT, "<");
   }
   //AWS cli s3select parameters
+  if(m_s3select_query.find(input_tag+"><CSV") != std::string::npos)
+  {
+    ldpp_dout(this, 10) << "s3select: engine is set to process CSV objects" << dendl;
+  }
+  else if(m_s3select_query.find(input_tag+"><JSON") != std::string::npos)
+  {
+    m_json_type=true;
+    ldpp_dout(this, 10) << "s3select: engine is set to process JSON objects" << dendl;
+  }
+  else if(m_s3select_query.find(input_tag+"><Parquet") != std::string::npos)
+  {
+    m_parquet_type=true;
+    ldpp_dout(this, 10) << "s3select: engine is set to process Parquet objects" << dendl;
+  }
+
   extract_by_tag(m_s3select_query, "Expression", sql_query);
   extract_by_tag(m_s3select_query, "Enabled", m_enable_progress);
   size_t _qi = m_s3select_query.find("<" + input_tag + ">", 0);
@@ -545,9 +584,6 @@ int RGWSelectObj_ObjStore_S3::handle_aws_cli_parameters(std::string& sql_query)
   extract_by_tag(m_s3select_input, "RecordDelimiter", m_row_delimiter);
   extract_by_tag(m_s3select_input, "FileHeaderInfo", m_header_info);
   extract_by_tag(m_s3select_input, "Type", m_json_datatype);
-  if(m_json_datatype.compare("DOCUMENT") == 0)  {
-    m_json_type = true;
-  }
   if (m_row_delimiter.size()==0) {
     m_row_delimiter='\n';
   } else if(m_row_delimiter.compare("&#10;") == 0) {
@@ -688,7 +724,7 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
   int status = 0;
   
   if (s->obj_size == 0) {
-    status = run_s3select(m_sql_query.c_str(), nullptr, 0);
+    status = run_s3select_on_csv(m_sql_query.c_str(), nullptr, 0);
     if(status<0){
       return -EINVAL;
     }
@@ -704,7 +740,7 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
         continue;
       }
       m_aws_response_handler.update_processed_size(it.length());
-      status = run_s3select(m_sql_query.c_str(), &(it)[0], it.length());
+      status = run_s3select_on_csv(m_sql_query.c_str(), &(it)[0], it.length());
       if(status<0) {
 	return -EINVAL;
       }
@@ -732,34 +768,6 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
 int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t len)
 {
   int status = 0;
-
-  const char* s3select_syntax_error = "s3select-Syntax-Error";
-  const char* s3select_resource_id = "resourcse-id";
-  const char* s3select_json_error = "json-Format-Error";
-
-  //parsing the SQL statement
-  s3select_syntax.parse_query(m_sql_query.c_str());
-  //initializing json processor
-  m_s3_json_object.set_json_query(&s3select_syntax);
-
-  //the JSON data-type should be(currently) only DOCUMENT
-  if(m_json_datatype.compare("DOCUMENT") != 0) {
-    const char* s3select_json_error_msg = "s3-select query: wrong json dataType should use DOCUMENT; ";
-    m_aws_response_handler.send_error_response(s3select_json_error,
-        s3select_json_error_msg,
-        s3select_resource_id);
-    ldpp_dout(this, 10) << s3select_json_error_msg << dendl;
-    return -EINVAL;
-  } 
-
-  if (s3select_syntax.get_error_description().empty() == false) {
-    //SQL statement is wrong(syntax).
-    m_aws_response_handler.send_error_response(s3select_syntax_error,
-        s3select_syntax.get_error_description().c_str(),
-        s3select_resource_id);
-    ldpp_dout(this, 10) << "s3-select query: failed to prase query; {" << s3select_syntax.get_error_description() << "}" << dendl;
-    return -EINVAL;
-  }
   
   if (s->obj_size == 0) {
     //in case of empty object the s3select-function returns a correct "empty" result(for aggregation and non-aggregation queries).

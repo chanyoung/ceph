@@ -201,6 +201,7 @@ private:
   std::string range_req_str;
   std::function<int(std::string&)> fp_result_header_format;
   std::function<int(std::string&)> fp_s3select_result_format;
+  std::function<void(const char*)> fp_debug_mesg;
   int m_header_size;
 
 public:

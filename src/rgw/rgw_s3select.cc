@@ -287,6 +287,10 @@ RGWSelectObj_ObjStore_S3::RGWSelectObj_ObjStore_S3():
     m_aws_response_handler.send_success_response();
     return 0;
   };
+
+  fp_debug_mesg = [&](const char* mesg){
+    ldpp_dout(this, 10) << mesg << dendl;
+  };
 }
 
 RGWSelectObj_ObjStore_S3::~RGWSelectObj_ObjStore_S3()
@@ -432,6 +436,7 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_parquet(const char* query)
   if (!m_s3_parquet_object.is_set()) {
     //parsing the SQL statement
     s3select_syntax.parse_query(m_sql_query.c_str());
+    m_s3_parquet_object.set_external_debug_system(fp_debug_mesg);
     try {
       //at this stage the Parquet-processing requires for the meta-data that reside on Parquet object 
       m_s3_parquet_object.set_parquet_object(std::string("s3object"), &s3select_syntax, &m_rgw_api);

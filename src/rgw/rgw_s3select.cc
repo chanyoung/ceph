@@ -261,7 +261,6 @@ void aws_response_handler::send_stats_response()
 RGWSelectObj_ObjStore_S3::RGWSelectObj_ObjStore_S3():
   m_buff_header(std::make_unique<char[]>(1000)),
   m_parquet_type(false),
-  m_json_datatype("DOCUMENT"),
   m_json_type(false),
   chunk_number(0)
 {
@@ -479,10 +478,7 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
     const char* s3select_resource_id = "resourcse-id";
     const char* s3select_json_error = "json-Format-Error";
 
-    //parsing the SQL statement
-    s3select_syntax.parse_query(m_sql_query.c_str());
-    //initializing json processor
-    m_s3_json_object.set_json_query(&s3select_syntax);
+    m_aws_response_handler.init_response();
 
     //the JSON data-type should be(currently) only DOCUMENT
     if(m_json_datatype.compare("DOCUMENT") != 0) {
@@ -494,6 +490,8 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
       return -EINVAL;
     } 
 
+    //parsing the SQL statement
+    s3select_syntax.parse_query(m_sql_query.c_str());
     if (s3select_syntax.get_error_description().empty() == false) {
     //SQL statement is wrong(syntax).
       m_aws_response_handler.send_error_response(s3select_syntax_error,
@@ -503,7 +501,9 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
       return -EINVAL;
     }
     
-    m_aws_response_handler.init_response();
+    //initializing json processor
+    m_s3_json_object.set_json_query(&s3select_syntax);
+
     if (input == nullptr) {
       input = "";
     }
@@ -511,7 +511,16 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
     m_aws_response_handler.init_success_response();
     length_before_processing = temp_result.size();
     //query is correct(syntax), processing is starting.
-    status = m_s3_json_object.run_s3select_on_stream(temp_result, input, input_length, s->obj_size);
+    try {
+      status = m_s3_json_object.run_s3select_on_stream(temp_result, input, input_length, s->obj_size);
+    } catch(base_s3select_exception& e) {
+      ldpp_dout(this, 10) << "S3select: failed to process JSON object: " << e.what() << dendl;
+      m_aws_response_handler.get_sql_result().append(e.what());
+      m_aws_response_handler.send_error_response(s3select_processTime_error,
+          e.what(),
+          s3select_resource_id);
+      return -EINVAL;
+    }
     m_aws_response_handler.get_sql_result().append(temp_result);
     length_post_processing = temp_result.size();
     m_aws_response_handler.update_total_bytes_returned(length_post_processing-length_before_processing);
@@ -521,7 +530,7 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
           m_s3_json_object.get_error_description().c_str(),
           s3select_resource_id);
       ldpp_dout(this, 10) << "s3-select query: failed to process query; {" << m_s3_json_object.get_error_description() << "}" << dendl;
-      return -1;
+      return -EINVAL;
     }
     if (chunk_number == 0) {
       //success flow

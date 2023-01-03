@@ -260,6 +260,10 @@ void aws_response_handler::send_stats_response()
 
 RGWSelectObj_ObjStore_S3::RGWSelectObj_ObjStore_S3():
   m_buff_header(std::make_unique<char[]>(1000)),
+  m_scan_range_ind(false),
+  m_start_scan_sz(0),
+  m_end_scan_sz(0),
+  m_object_size_for_processing(0),
   m_parquet_type(false),
   m_json_type(false),
   chunk_number(0)
@@ -393,7 +397,7 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_csv(const char* query, const char*
     m_aws_response_handler.init_success_response();
     length_before_processing = (m_aws_response_handler.get_sql_result()).size();
     //query is correct(syntax), processing is starting.
-    status = m_s3_csv_object.run_s3select_on_stream(m_aws_response_handler.get_sql_result(), input, input_length, s->obj_size);
+    status = m_s3_csv_object.run_s3select_on_stream(m_aws_response_handler.get_sql_result(), input, input_length, m_object_size_for_processing);
     length_post_processing = (m_aws_response_handler.get_sql_result()).size();
     m_aws_response_handler.update_total_bytes_returned(length_post_processing-length_before_processing);
     if (status < 0) {
@@ -512,7 +516,7 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
     length_before_processing = temp_result.size();
     //query is correct(syntax), processing is starting.
     try {
-      status = m_s3_json_object.run_s3select_on_stream(temp_result, input, input_length, s->obj_size);
+      status = m_s3_json_object.run_s3select_on_stream(temp_result, input, input_length, m_object_size_for_processing);
     } catch(base_s3select_exception& e) {
       ldpp_dout(this, 10) << "S3select: failed to process JSON object: " << e.what() << dendl;
       m_aws_response_handler.get_sql_result().append(e.what());
@@ -523,7 +527,7 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
     }
     m_aws_response_handler.get_sql_result().append(temp_result);
     length_post_processing = temp_result.size();
-    m_aws_response_handler.update_total_bytes_returned(length_post_processing-length_before_processing);
+    m_aws_response_handler.update_total_bytes_returned(length_post_processing - length_before_processing);
     if (status < 0) {
       //error flow(processing-time)
       m_aws_response_handler.send_error_response(s3select_processTime_error,
@@ -624,6 +628,19 @@ int RGWSelectObj_ObjStore_S3::handle_aws_cli_parameters(std::string& sql_query)
     ldpp_dout(this, 10) << "RGW supports currently only NONE option for compression type" << dendl;
     return -1;
   }
+  extract_by_tag(m_s3select_query, "Start", m_start_scan);
+  extract_by_tag(m_s3select_query, "End", m_end_scan);
+  if(m_start_scan.size() || m_end_scan.size()){
+    m_scan_range_ind = true;
+    if(m_start_scan.size()){
+      m_start_scan_sz = std::stol(m_start_scan);
+    }
+    if(m_end_scan.size()){
+      m_end_scan_sz = std::stol(m_end_scan);
+    } else {
+      m_end_scan_sz = std::numeric_limits<std::int64_t>::max();
+    } 
+  }
   return 0;
 }
 
@@ -660,7 +677,7 @@ int RGWSelectObj_ObjStore_S3::range_request(int64_t ofs, int64_t len, void* buff
   m_request_range = len;
   ldout(s->cct, 10) << "S3select: calling execute(async):" << " request-offset :" << ofs << " request-length :" << len << " buffer size : " << requested_buffer.size() << dendl;
   RGWGetObj::execute(y);
-  memcpy(buff, requested_buffer.data(), len);
+  if(buff){memcpy(buff, requested_buffer.data(), len);}
   ldout(s->cct, 10) << "S3select: done waiting, buffer is complete buffer-size:" << requested_buffer.size() << dendl;
   return len;
 }
@@ -691,10 +708,15 @@ void RGWSelectObj_ObjStore_S3::execute(optional_yield y)
     } else {
       ldout(s->cct, 10) << "S3select: complete query with success " << dendl;
     }
-    }  else  {
-    //CSV or JSON processing
-    RGWGetObj::execute(y);
-  }
+    } else { 
+	//CSV or JSON processing
+	if(m_scan_range_ind) {
+	  //scan-range
+	  range_request(m_start_scan_sz, m_end_scan_sz - m_start_scan_sz, nullptr, y);
+	} else {
+	  RGWGetObj::execute(y);
+	}
+  }//if (m_parquet_type)
 }
 
 int RGWSelectObj_ObjStore_S3::parquet_processing(bufferlist& bl, off_t ofs, off_t len)
@@ -737,7 +759,7 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
 {
   int status = 0;
   
-  if (s->obj_size == 0) {
+  if (s->obj_size == 0 || m_object_size_for_processing == 0) {
     status = run_s3select_on_csv(m_sql_query.c_str(), nullptr, 0);
     if(status<0){
       return -EINVAL;
@@ -747,14 +769,14 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
     int i=0;
     for(auto& it : bl.buffers()) {
       ldpp_dout(this, 10) << "processing segment " << i << " out of " << bl_len << " off " << ofs
-                          << " len " << len << " obj-size " << s->obj_size << dendl;
-      if(it.length() == 0) {
+                          << " len " << len << " obj-size " << m_object_size_for_processing << dendl;
+      if(len == 0){
         ldpp_dout(this, 10) << "s3select:it->_len is zero. segment " << i << " out of " << bl_len
-                            <<  " obj-size " << s->obj_size << dendl;
+                            <<  " obj-size " << m_object_size_for_processing << dendl;
         continue;
       }
-      m_aws_response_handler.update_processed_size(it.length());
-      status = run_s3select_on_csv(m_sql_query.c_str(), &(it)[0], it.length());
+      m_aws_response_handler.update_processed_size(len);
+      status = run_s3select_on_csv(m_sql_query.c_str(), &(it)[0], len);
       if(status<0) {
 	return -EINVAL;
       }
@@ -764,7 +786,7 @@ int RGWSelectObj_ObjStore_S3::csv_processing(bufferlist& bl, off_t ofs, off_t le
       i++;
     }
   }
-  if (m_aws_response_handler.get_processed_size() == s->obj_size || m_s3_csv_object.is_sql_limit_reached()) {
+  if (m_aws_response_handler.get_processed_size() == uint64_t(m_object_size_for_processing) || m_s3_csv_object.is_sql_limit_reached()) {
     if (status >=0) {
       m_aws_response_handler.init_stats_response();
       m_aws_response_handler.send_stats_response();
@@ -783,7 +805,7 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
 {
   int status = 0;
   
-  if (s->obj_size == 0) {
+  if (s->obj_size == 0 || m_object_size_for_processing == 0) {
     //in case of empty object the s3select-function returns a correct "empty" result(for aggregation and non-aggregation queries).
     status = run_s3select_on_json(m_sql_query.c_str(), nullptr, 0);
     if(status<0)
@@ -794,15 +816,15 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
     int i=0;
     for(auto& it : bl.buffers()) {
       ldpp_dout(this, 10) << "processing segment " << i << " out of " << bl_len << " off " << ofs
-                          << " len " << len << " obj-size " << s->obj_size << dendl;
+                          << " len " << len << " obj-size " << m_object_size_for_processing << dendl;
       //skipping the empty chunks
-      if(it.length() == 0) {
+      if(len == 0) {
         ldpp_dout(this, 10) << "s3select:it->_len is zero. segment " << i << " out of " << bl_len
-                            <<  " obj-size " << s->obj_size << dendl;
+                            <<  " obj-size " << m_object_size_for_processing << dendl;
         continue;
       }
-      m_aws_response_handler.update_processed_size(it.length());
-      status = run_s3select_on_json(m_sql_query.c_str(), &(it)[0], it.length());
+      m_aws_response_handler.update_processed_size(len);
+      status = run_s3select_on_json(m_sql_query.c_str(), &(it)[0], len);
       if(status<0) {
 	status = -EINVAL;
         break;
@@ -814,7 +836,7 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
     }
   }
 
-  if (m_aws_response_handler.get_processed_size() == s->obj_size || m_s3_json_object.is_sql_limit_reached()) {
+  if (m_aws_response_handler.get_processed_size() == uint64_t(m_object_size_for_processing) || m_s3_json_object.is_sql_limit_reached()) {
     //flush the internal JSON buffer(upon last chunk)
     status = run_s3select_on_json(m_sql_query.c_str(), nullptr, 0);
     if(status<0) {
@@ -836,6 +858,15 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
 
 int RGWSelectObj_ObjStore_S3::send_response_data(bufferlist& bl, off_t ofs, off_t len)
 {
+  if(m_scan_range_ind == false){
+    m_object_size_for_processing = s->obj_size;
+  }
+  if(m_scan_range_ind == true){
+      if(m_end_scan_sz == -1){
+       	m_end_scan_sz = s->obj_size;
+      }
+      m_object_size_for_processing = m_end_scan_sz - m_start_scan_sz;
+  }
   if (!m_aws_response_handler.is_set()) {
     m_aws_response_handler.set(s, this);
   }

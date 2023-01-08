@@ -511,12 +511,11 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
     if (input == nullptr) {
       input = "";
     }
-    std::string temp_result;
     m_aws_response_handler.init_success_response();
-    length_before_processing = temp_result.size();
+    length_before_processing = m_aws_response_handler.get_sql_result().size();
     //query is correct(syntax), processing is starting.
     try {
-      status = m_s3_json_object.run_s3select_on_stream(temp_result, input, input_length, m_object_size_for_processing);
+      status = m_s3_json_object.run_s3select_on_stream(m_aws_response_handler.get_sql_result(), input, input_length, m_object_size_for_processing);
     } catch(base_s3select_exception& e) {
       ldpp_dout(this, 10) << "S3select: failed to process JSON object: " << e.what() << dendl;
       m_aws_response_handler.get_sql_result().append(e.what());
@@ -525,8 +524,7 @@ int RGWSelectObj_ObjStore_S3::run_s3select_on_json(const char* query, const char
           s3select_resource_id);
       return -EINVAL;
     }
-    m_aws_response_handler.get_sql_result().append(temp_result);
-    length_post_processing = temp_result.size();
+    length_post_processing = m_aws_response_handler.get_sql_result().size();
     m_aws_response_handler.update_total_bytes_returned(length_post_processing - length_before_processing);
     if (status < 0) {
       //error flow(processing-time)
@@ -836,7 +834,7 @@ int RGWSelectObj_ObjStore_S3::json_processing(bufferlist& bl, off_t ofs, off_t l
     }
   }
 
-  if (m_aws_response_handler.get_processed_size() == uint64_t(m_object_size_for_processing) || m_s3_json_object.is_sql_limit_reached()) {
+  if (status>=0 && (m_aws_response_handler.get_processed_size() == uint64_t(m_object_size_for_processing) || m_s3_json_object.is_sql_limit_reached())) {
     //flush the internal JSON buffer(upon last chunk)
     status = run_s3select_on_json(m_sql_query.c_str(), nullptr, 0);
     if(status<0) {

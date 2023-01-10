@@ -384,6 +384,12 @@ String functions
 
     | ``upper\lower`` : converts characters into lowercase/uppercase.
 
+SQL limit operator
+~~~~~~~~~~~~~~~~~~
+
+    | The SQL LIMIT operator is used to limit the number of rows processed by the query.
+    | Upon reaching the limit set by the user, the RGW stops fetching additional chunks.
+    | TODO : add examples, for aggregation and non-aggregation queries.
 
 Alias
 ~~~~~
@@ -442,7 +448,8 @@ Sending Query to RGW
 
  aws --endpoint-url http://localhost:8000 s3api select-object-content 
   --bucket {BUCKET-NAME}  
-  --expression-type 'SQL'     
+  --expression-type 'SQL'
+  --scan-range '{"Start" : 1000, "End" : 1000000}' 
   --input-serialization 
   '{"CSV": {"FieldDelimiter": "," , "QuoteCharacter": "\"" , "RecordDelimiter" : "\n" , "QuoteEscapeCharacter" : "\\" , "FileHeaderInfo": "USE" }, "CompressionType": "NONE"}' 
   --output-serialization '{"CSV": {"FieldDelimiter": ":", "RecordDelimiter":"\t", "QuoteFields": "ALWAYS"}}' 
@@ -496,6 +503,13 @@ Output Serialization
    | **FieldDelimiter** -> (string)
    | The value used to separate individual fields in a record. You can specify an arbitrary delimiter.
 
+scan range option
+~~~~~~~~~~~~~~~~~
+
+   | The scan range option is a part of AWS-CLI syntax, it enables to scan and process only the selected part of the object. 
+   | This option reduces the amount of IO operations (by skipping).
+   | TODO : different data-sources (CSV, JSON, Parquet)
+
 CSV parsing behavior
 --------------------
 
@@ -530,6 +544,32 @@ CSV parsing behavior
 |                                 | tag             | "**IGNORE**" value means to skip the first line                       |
 +---------------------------------+-----------------+-----------------------------------------------------------------------+       
 
+JSON
+--------------------
+
+         | a JSON reader has been integrated with the s3select-engine, which allows the client to use SQL statements to scan and extract information from JSON documents. 
+         | It should be noted that the data readers and parsers for CSV, Parquet, and JSON documents are separated from the SQL engine itself, so all of these readers use the same SQL engine.
+
+         | It's important to note that values in a JSON document can be nested in various ways, such as within objects or arrays.
+         | These objects and arrays can be nested within each other without any limitations.
+         | upon using SQL to query a specific value in a JSON document, the user needs to use a specific syntax to describe the location of the value.
+         | This is because the standard "select column from object" syntax will not work.
+         | Instead, the user must use a path in the SELECT statement to tell the JSON reader where the value is located.
+
+         | The SQL engine processes the SELECT statement in a row-based fashion.
+         | It uses the columns specified in the statement to perform its projection calculation, and each row contains values for these columns.
+         | In other words, the SQL engine processes each row one at a time(and aggregates results), using the values in the columns to perform its SQL calculations.
+         | However, the generic structure of a JSON document does not have a row-and-column structure like CSV or Parquet.
+         | Instead, it is the SQL statement itself that defines the rows and columns when querying a JSON document.
+
+         | Upon querying JSON documents using SQL, the FROM clause in the SELECT statement defines the row boundaries.
+         | a row in a JSON document should be similar to how the row delimiter is used to define rows when querying CSV objects, and how row groups are used to define rows when querying Parquet objects.
+         | The statement "SELECT ... FROM s3object[*].aaa.bb.cc" instructs the reader to search for the path "aaa.bb.cc" and defines the row boundaries based on the occurrence of this path.
+         | A row begins when the reader encounters the path, and it ends when the reader exits the innermost part of the path, which in this case is the object "cc".
+
+         | NOTE : The semantics of querying JSON document may change and may not be the same as the current methodology described.
+
+         | TODO : relevant example for object and array values.
 
 BOTO3
 -----

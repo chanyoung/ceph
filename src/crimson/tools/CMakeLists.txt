@@ -37,3 +37,10 @@ target_link_libraries(crimson-objectstore-tool
   crimson
   crimson-os)
 install(TARGETS crimson-objectstore-tool DESTINATION bin)
+
+add_executable(crimson-store-waf
+  store_waf/store-waf.cc
+  store_waf/waf_simulator.cc
+  ${PROJECT_SOURCE_DIR}/src/crimson/osd/lsan_suppressions.cc)
+target_link_libraries(crimson-store-waf crimson-os)
+install(TARGETS crimson-store-waf DESTINATION bin)

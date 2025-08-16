@@ -35,6 +35,9 @@ open_ertr::future<> NVMeBlockDevice::open(
   seastar::open_flags mode) {
   return seastar::do_with(in_path, [this, mode](auto& in_path) {
     return seastar::file_stat(in_path).then([this, mode, in_path](auto stat) {
+      if (&tools::waf::register_device) {
+        tools::waf::register_device(stat.size);
+      }
       return seastar::open_file_dma(in_path, mode).then([=, this](auto file) {
         device = std::move(file);
         logger().debug("open");
@@ -119,6 +122,9 @@ write_ertr::future<> NVMeBlockDevice::write(
       offset,
       bptr.length());
   auto length = bptr.length();
+  if (&tools::waf::record_write) {
+    tools::waf::record_write(offset, length, stream);
+  }
 
   assert((length % super.block_size) == 0);
   uint16_t supported_stream = stream;
@@ -188,6 +194,9 @@ write_ertr::future<> NVMeBlockDevice::writev(
     "block: write offset {} len {}",
     offset,
     bl.length());
+  if (&tools::waf::record_write) {
+    tools::waf::record_write(offset, bl.length(), stream);
+  }
 
   uint16_t supported_stream = stream;
   if (stream >= stream_id_count) {
@@ -262,6 +271,9 @@ NVMeBlockDevice::identify_controller(seastar::file f) {
 }
 
 discard_ertr::future<> NVMeBlockDevice::discard(uint64_t offset, uint64_t len) {
+  if (&tools::waf::record_discard) {
+    tools::waf::record_discard(offset, len);
+  }
   return device.discard(offset, len);
 }
 

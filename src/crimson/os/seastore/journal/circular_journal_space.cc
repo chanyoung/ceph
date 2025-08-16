@@ -27,7 +27,7 @@ std::ostream &operator<<(std::ostream &out,
 CircularJournalSpace::CircularJournalSpace(RBMDevice * device) : device(device) {}
   
 bool CircularJournalSpace::needs_roll(std::size_t length) const {
-  if (length + get_rbm_addr(get_written_to()) > get_journal_end()) {
+  if (length + get_rbm_addr(get_written_to()) >= get_journal_end()) {
     return true;
   }
   return false;
@@ -162,7 +162,7 @@ CircularJournalSpace::device_write_bl(
 {
   LOG_PREFIX(CircularJournalSpace::device_write_bl);
   auto length = bl.length();
-  if (offset + length > get_journal_end()) {
+  if (offset + length >= get_journal_end()) {
     return crimson::ct_error::erange::make();
   }
   DEBUG(

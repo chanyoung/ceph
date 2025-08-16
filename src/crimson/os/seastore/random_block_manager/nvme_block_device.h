@@ -9,6 +9,7 @@
 #include <seastar/core/file.hh>
 #include <linux/nvme_ioctl.h>
 
+#include "crimson/tools/store_waf/waf_write_hook.h"
 #include "crimson/osd/exceptions.h"
 #include "crimson/common/layout.h"
 #include "rbm_device.h"

@@ -10,6 +10,7 @@
 #include <seastar/core/future.hh>
 #include <seastar/core/reactor.hh>
 
+#include "crimson/tools/store_waf/waf_write_hook.h"
 #include "crimson/common/layout.h"
 
 #include "crimson/os/seastore/segment_manager.h"

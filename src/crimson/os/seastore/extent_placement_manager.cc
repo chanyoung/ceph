@@ -1067,6 +1067,16 @@ RandomBlockOolWriter::do_write(
     }
 
     // TODO : allocate a consecutive address based on a transaction
+    uint64_t version = 0;
+    if (ex->get_prior_instance()) {
+      version = ex->get_prior_instance()->get_version();
+    }
+    uint16_t stream = version <= 16 ? 0 : 2;
+    /*
+    if (stream == 2) {
+      std::cout << "stream: " << stream << ", version: " << version << std::endl;
+    }
+    */
     if (writes.size() != 0 &&
         writes.back().offset + writes.back().bp.length() == paddr) {
       // We can write both the currrent extent and the previous one at once
@@ -1075,12 +1085,14 @@ RandomBlockOolWriter::do_write(
 	 writes.back().mergeable_bps.push_back(writes.back().bp);
       }
       writes.back().mergeable_bps.push_back(ex->get_bptr());
+      writes.back().stream = stream;
     } else {
       // Write a single extent in the existing way
       write_info_t w_info;
       w_info.offset = paddr;
       w_info.rbm = rbm;
       w_info.bp = bp;
+      w_info.stream = stream;
       writes.push_back(w_info);
     }
     TRACE("current extent: {}~0x{:x},\
@@ -1113,7 +1125,7 @@ RandomBlockOolWriter::do_write(
       trans_stats.num_records += writes.size();
       return alloc_write_ertr::parallel_for_each(writes,
         [](auto& info) {
-        return info.rbm->write(info.offset, info.bp
+        return info.rbm->write(info.offset, info.bp, info.stream
         ).handle_error(
           alloc_write_ertr::pass_further{},
           crimson::ct_error::assert_all{

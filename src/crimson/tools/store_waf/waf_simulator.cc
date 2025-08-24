@@ -122,26 +122,28 @@ public:
       w.line = w.page = INVALID;
     }
     free_line_count = nlines;
+    nand_writes = host_writes = 0;
+  }
+
+  void calc_waf() {
+    std::cout << "[WAF - fdp " << fdp_enabled << "] " <<
+      nand_writes * 100 / host_writes << " %" << std::endl;
+    nand_writes = host_writes = 0;
   }
 
   void register_device(uint64_t total_bytes) {
     ceph_assert(total_bytes == user_capacity);
-    if (!ruhs[0].opened) {
-      open_ruh(false);
-    }
+    open_ruh(0, false);
   }
 
-  uint32_t open_ruh(bool initially_isolated) {
-    for (uint32_t i = 0; i < ruh_count; ++i) {
-      if (!ruhs[i].opened) {
-        ruhs[i].opened = true;
-        ruhs[i].initially_isolated = initially_isolated;
-        wps[i].line = get_next_free_line();
-        wps[i].page = 0;
-        return i;
-      }
+  void open_ruh(uint16_t handle, bool initially_isolated) {
+    ceph_assert(handle < ruh_count);
+    if (!ruhs[handle].opened) {
+      ruhs[handle].opened = true;
+      wps[handle].line = get_next_free_line();
+      wps[handle].page = 0;
     }
-    ceph_abort(); // Full
+    ruhs[handle].initially_isolated = initially_isolated;
   }
 
   void record_write(uint64_t offset, uint64_t bytes, uint16_t handle) {
@@ -163,6 +165,10 @@ public:
       l2p[lpn].line = wps[handle].line;
       l2p[lpn].page = wps[handle].page;
       advance_write_pointer(handle);
+
+      if (++host_writes % 100000 == 0) {
+	calc_waf();
+      }
     }
   }
 
@@ -222,6 +228,9 @@ private:
   std::vector<wp>   wps;
   uint32_t          free_line_count;
 
+  uint64_t          nand_writes;
+  uint64_t          host_writes;
+
   void invalidate_lpn(uint64_t lpn) {
     ceph_assert(lpn < lpn_count);
     ppa mapped = l2p[lpn];
@@ -251,6 +260,7 @@ private:
       wps[handle].line = get_next_free_line();
       lines[wps[handle].line].handle = handle;
     }
+    ++nand_writes;
   }
 
   uint32_t get_next_free_line() {
@@ -283,7 +293,7 @@ private:
                 lines[victim_line_n].vpc == pages_per_line);
 
     auto &victim_line = lines[victim_line_n];
-    std::cout << "[GC] invalid ratio: "
+    std::cout << "[GC - fdp " << fdp_enabled << "] invalid ratio: "
       << victim_line.ipc * 100 / pages_per_line
       << " %" << std::endl;
 
@@ -329,6 +339,10 @@ struct multiplexer {
     fdp.register_device(total_bytes);
   }
 
+  void open_ruh(uint16_t handle, bool initially_isolated) {
+    return fdp.open_ruh(handle, initially_isolated);
+  }
+
   void record_write(uint64_t off, uint64_t bytes, uint16_t handle) {
     base.record_write(off, bytes, 0);
     fdp.record_write(off, bytes, handle);
@@ -346,6 +360,10 @@ static multiplexer mux;
 namespace crimson::tools::waf {
   void register_device(uint64_t total_bytes) {
     mux.register_device(total_bytes);
+  }
+
+  void open_ruh(uint16_t handle, bool initially_isolated) {
+    mux.open_ruh(handle, initially_isolated);
   }
 
   void record_write(uint64_t offset, uint64_t bytes, uint16_t handle) {

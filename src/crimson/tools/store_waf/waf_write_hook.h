@@ -11,6 +11,8 @@ namespace crimson::tools::waf {
 // TODO: multi devices support
 void register_device(uint64_t total_bytes) __attribute__((weak));
 
+void open_ruh(uint16_t handle, bool initially_isolated) __attribute__((weak));
+
 void record_write(uint64_t offset,
                   uint64_t bytes,
                   uint16_t stream) __attribute__((weak));

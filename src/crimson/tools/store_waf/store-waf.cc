@@ -38,7 +38,7 @@ seastar::future<> pg_log_workload(crimson::os::FuturizedStore &global_store) {
   std::map<int, coll_t> collection_id;
   std::map<int, crimson::os::CollectionRef> coll_ref_map;
 
-  const int fill_size = 50000;
+  const int fill_size = 55000;
 
   auto pre_fill_logs = [&]() -> seastar::future<> {
     for (int i = 0; i < fill_size; ++i) {
@@ -65,9 +65,11 @@ seastar::future<> pg_log_workload(crimson::os::FuturizedStore &global_store) {
     co_return;
   };
 
+  std::mt19937 rng{ 123456u };
+  std::normal_distribution<double> dist((fill_size-1)/2.0, fill_size/30.0);
   auto random_updates = [&]() -> seastar::future<> {
     while (true) {
-      int i = rand() % fill_size;
+      int i = std::clamp<int>(std::lround(dist(rng)), 0, (int)fill_size - 1);
       auto cid      = collection_id[i];
       auto coll_ref = coll_ref_map[i];
       auto obj_i    = create_hobj(i);

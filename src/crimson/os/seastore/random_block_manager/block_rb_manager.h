@@ -43,7 +43,7 @@ public:
    */
 
   read_ertr::future<> read(paddr_t addr, bufferptr &buffer) final;
-  write_ertr::future<> write(paddr_t addr, bufferptr buf) final;
+  write_ertr::future<> write(paddr_t addr, bufferptr buf, uint16_t stream = 0) final;
   open_ertr::future<> open() final;
   close_ertr::future<> close() final;
 
@@ -74,7 +74,7 @@ public:
     allocator.reset(new AvlAllocator(detailed));
   }
 
-  write_ertr::future<> write(rbm_abs_addr addr, bufferlist &bl);
+  write_ertr::future<> write(rbm_abs_addr addr, bufferlist &bl, uint16_t stream = 0);
 
   device_id_t get_device_id() const final {
     assert(device);

@@ -38,6 +38,13 @@ open_ertr::future<> NVMeBlockDevice::open(
       if (&tools::waf::register_device) {
         tools::waf::register_device(stat.size);
       }
+      if (&tools::waf::open_ruh) {
+        // Handle 1 for journal.
+        tools::waf::open_ruh(1, false /* initially_isolated */);
+        // Handle 2 for hot data.
+        tools::waf::open_ruh(2, true /* initially_isolated */);
+        // Handle 0 for others.
+      }
       return seastar::open_file_dma(in_path, mode).then([=, this](auto file) {
         device = std::move(file);
         logger().debug("open");

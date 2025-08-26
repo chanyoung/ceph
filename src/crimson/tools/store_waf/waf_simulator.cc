@@ -15,9 +15,15 @@ namespace {
 constexpr uint32_t nchannels        = 2;
 constexpr uint32_t luns_per_channel = 2;
 constexpr uint32_t planes_per_lun   = 4;
-constexpr uint32_t blocks_per_plane = 128;
-constexpr uint32_t pages_per_block  = 128;
-constexpr uint32_t page_nbytes      = 16ULL * 1024;
+constexpr uint32_t blocks_per_plane = 256;
+constexpr uint32_t pages_per_block  = 256;
+// On modern SSDs, page sizes of 16KB or 32KB are common. However,
+// using such sizes would complicate WAF simulation by requiring
+// additional concepts, since the page size would no longer align with
+// the mapping table. As this tool’s sole purpose is to derive WAF
+// values, it adopts a 4KB page size which is directly matching the
+// mapping table, to keep the implementation as simple as possible.
+constexpr uint32_t page_nbytes      = 4ULL * 1024;
 constexpr uint32_t user_capacity    = 3.84 * 1000 * 1000 * 1000;
 
 // Summary:
@@ -29,8 +35,9 @@ constexpr uint32_t user_capacity    = 3.84 * 1000 * 1000 * 1000;
 //   - Operates with a single Reclaim Unit Handle (RUH) and a single Write Pointer (WP).
 //
 // (2) FDP enabled:
-//   - The number of RUHs equals the number of Parallel Units (PUs = LUNs).
-//   - Each RUH owns an independent WP, so writes are isolated per PU(LUN).
+//   - Each line stripes across all Parallel Units (PUs = LUNs).
+//   - Operates with multiple Reclaim Unit Handles (RUHs) and multiple Write Pointers (WPs).
+//   - Each RUH opens its own line.
 //
 // Detailed description:
 //
@@ -60,29 +67,27 @@ constexpr uint32_t user_capacity    = 3.84 * 1000 * 1000 * 1000;
 //
 // (2) FDP enabled:
 //
-// Reclaim Unit Handles (RUHs): count = nchannels * luns_per_channel.
-// Avaliable Write Pointers (WPs): nchannels * luns_per_channel.
-// Each Parallel Unit (PU) has its own lines.
-// pages_per_line = planes_per_lun * pages_per_block
+// (Max supported) RUHs: count = 8, WPs: count = 8.
+// pages_per_line = nchannels * luns_per_channel * planes_per_lun * pages_per_block
 //
-//  +----------+ +----------+ +----------+ +----------+
-//  |  RUH[0]  | |  RUH[1]  | |  RUH[2]  | |  RUH[3]  |
-//  +-------+--+ +-------+--+ +-------+--+ +-------+--+
-//          |            |            |            |
-//          v            v            v            v
-//     +-------+    +-------+    +-------+    +-------+
-//     | WP[0] |    | WP[1] |    | WP[2] |    | WP[3] |
-//     +----+--+    +----+--+    +----+--+    +----+--+
-//          |            |            |            |
-//          v            v            v            v
-//  +------------------------------------------------------------------+
-//  | Lines (nlines = nchannels * luns_per_channel * blocks_per_plane) |
-//  |                                                                  |
-//  |  Line[0]: [ page × pages_per_line ]                              |
-//  |  Line[1]: [ page × pages_per_line ]                              |
-//  |   ...                                                            |
-//  |  Line[N-1]: [ page × pages_per_line ]                            |
-//  +------------------------------------------------------------------+
+//  +----------+ +----------+ +----------+
+//  |  RUH[0]  | |  RUH[1]  | |  RUH[2]  | ...
+//  +-------+--+ +-------+--+ +-------+--+
+//          |            |            |
+//          v            v            v
+//     +-------+    +-------+    +-------+
+//     | WP[0] |    | WP[1] |    | WP[2] | ...
+//     +----+--+    +----+--+    +----+--+
+//          |            |            |
+//          v            v            v
+//  +---------------------------------------+
+//  | Lines (nlines = blocks_per_plane)     |
+//  |                                       |
+//  |  Line[0]: [ page × pages_per_line ]   |
+//  |  Line[1]: [ page × pages_per_line ]   |
+//  |   ...                                 |
+//  |  Line[N-1]: [ page × pages_per_line ] |
+//  +---------------------------------------+
 
 class waf_simulator {
   // INVALID collectively refers to INVALID_LPN/PPA/INDEX.
@@ -92,11 +97,9 @@ public:
   explicit waf_simulator(bool fdp_enable)
     : fdp_enabled(fdp_enable),
       full_stripe(!fdp_enabled),
-      nlines(full_stripe ? blocks_per_plane
-	                 : nchannels * luns_per_channel * blocks_per_plane),
-      pages_per_line(full_stripe ? nchannels * luns_per_channel * planes_per_lun * pages_per_block
-	                         : planes_per_lun * pages_per_block),
-      ruh_count(full_stripe ? 1 : nchannels * luns_per_channel),
+      nlines(blocks_per_plane),
+      pages_per_line(nchannels * luns_per_channel * planes_per_lun * pages_per_block),
+      ruh_count(full_stripe ? 1 : 8),
       lpn_count(user_capacity / page_nbytes + 1),
       ruhs(ruh_count),
       lines(nlines),
@@ -123,6 +126,7 @@ public:
     }
     free_line_count = nlines;
     nand_writes = host_writes = 0;
+    gc_threshold = 1;
   }
 
   void calc_waf() {
@@ -133,7 +137,7 @@ public:
 
   void register_device(uint64_t total_bytes) {
     ceph_assert(total_bytes == user_capacity);
-    open_ruh(0, false);
+    open_ruh(0, true);
   }
 
   void open_ruh(uint16_t handle, bool initially_isolated) {
@@ -142,6 +146,7 @@ public:
       ruhs[handle].opened = true;
       wps[handle].line = get_next_free_line();
       wps[handle].page = 0;
+      initially_isolated ? gc_threshold += 1 : gc_threshold += 2;
     }
     ruhs[handle].initially_isolated = initially_isolated;
   }
@@ -149,10 +154,6 @@ public:
   void record_write(uint64_t offset, uint64_t bytes, uint16_t handle) {
     const uint64_t start_lpn = offset / page_nbytes;
     const uint64_t last_lpn  = (offset + bytes) / page_nbytes;
-
-    if (free_line_count == ruh_count) {
-      do_gc();
-    }
 
     for (uint64_t lpn = start_lpn; lpn < last_lpn; ++lpn) {
       invalidate_lpn(lpn);
@@ -169,6 +170,10 @@ public:
       if (++host_writes % 100000 == 0) {
 	calc_waf();
       }
+    }
+
+    if (free_line_count <= gc_threshold) {
+      do_gc();
     }
   }
 
@@ -221,6 +226,7 @@ private:
   const uint32_t  pages_per_line;
   const uint16_t  ruh_count;
   const uint64_t  lpn_count;
+  uint16_t        gc_threshold;
 
   std::vector<ruh>  ruhs;
   std::vector<line> lines;

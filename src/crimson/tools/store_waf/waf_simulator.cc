@@ -150,7 +150,7 @@ public:
     const uint64_t start_lpn = offset / page_nbytes;
     const uint64_t last_lpn  = (offset + bytes) / page_nbytes;
 
-    if (free_line_count == 1) {
+    if (free_line_count == ruh_count) {
       do_gc();
     }
 

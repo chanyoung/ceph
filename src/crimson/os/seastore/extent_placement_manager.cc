@@ -1066,17 +1066,12 @@ RandomBlockOolWriter::do_write(
       ceph_assert("impossible");
     }
 
+    uint16_t stream = 2;
+    auto prior = ex->get_prior_instance();
+    if (prior) {
+      stream = 3;
+    }
     // TODO : allocate a consecutive address based on a transaction
-    uint64_t version = 0;
-    if (ex->get_prior_instance()) {
-      version = ex->get_prior_instance()->get_version();
-    }
-    uint16_t stream = version <= 16 ? 0 : 2;
-    /*
-    if (stream == 2) {
-      std::cout << "stream: " << stream << ", version: " << version << std::endl;
-    }
-    */
     if (writes.size() != 0 &&
         writes.back().offset + writes.back().bp.length() == paddr) {
       // We can write both the currrent extent and the previous one at once

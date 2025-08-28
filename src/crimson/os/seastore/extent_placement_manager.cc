@@ -1017,6 +1017,45 @@ RandomBlockOolWriter::alloc_write_ool_extents(
   });
 }
 
+struct simple_cms {
+  int w = 1000000;
+  int d = 3;
+  int ops = 0;
+  vector<vector<uint8_t>> t;
+
+  simple_cms():t(d,vector<uint8_t>(w)){}
+
+  void add(uint64_t x){
+    for (int i = 0; i < d; i++) {
+      auto &v = t[i][(x + i * 131) % w];
+      if (v < UINT8_MAX) {
+	v++;
+      }
+    }
+    if (++ops % 20000 == 0) {
+      halve();
+    }
+  }
+
+  int query(uint64_t x) {
+    uint8_t r = UINT8_MAX;
+    for (int i = 0; i < d; i++) {
+      r = std::min(r, t[i][(x + i * 131) % w]);
+    }
+    return r;
+  }
+
+  void halve() {
+    std::cout << "halving!!" << std::endl;
+    for (auto &row : t) {
+      for (uint8_t &v : row) {
+        v /= 2;
+      }
+    }
+    ops = 0;
+  }
+};
+
 RandomBlockOolWriter::alloc_write_iertr::future<>
 RandomBlockOolWriter::do_write(
   Transaction& t,
@@ -1027,6 +1066,7 @@ RandomBlockOolWriter::do_write(
   DEBUGT("start with {} allocated extents",
          t, extents.size());
   std::vector<write_info_t> writes;
+  static simple_cms cms;
   for (auto& ex : extents) {
     auto paddr = ex->get_paddr();
     assert(paddr.is_absolute());
@@ -1066,10 +1106,17 @@ RandomBlockOolWriter::do_write(
       ceph_assert("impossible");
     }
 
-    uint16_t stream = 2;
-    auto prior = ex->get_prior_instance();
-    if (prior) {
+    uint16_t stream = 0;
+    if (ex->get_prior_instance()) {
       stream = 3;
+    } else if (ex->is_logical()) {
+      auto laddr = std::hash<uint64_t>()(std::hash<laddr_t>()(ex->template cast<LogicalCachedExtent>()->get_laddr()));
+      if (cms.query(laddr) >= 2) {
+        stream = 3;
+      } else if (cms.query(laddr) == 1) {
+        stream = 2;
+      }
+      cms.add(laddr);
     }
     // TODO : allocate a consecutive address based on a transaction
     if (writes.size() != 0 &&

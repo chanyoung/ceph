@@ -104,7 +104,8 @@ public:
       ruhs(ruh_count),
       lines(nlines),
       l2p(lpn_count),
-      wps(ruh_count)
+      host_wps(ruh_count),
+      gc_wps(ruh_count)
   {
     for (auto &l : lines) {
       l.used = l.writing = false;
@@ -121,12 +122,14 @@ public:
     for (auto &e : l2p) {
       e.addr = INVALID;
     }
-    for (auto &w : wps) {
+    for (auto &w : host_wps) {
+      w.line = w.page = INVALID;
+    }
+    for (auto &w : gc_wps) {
       w.line = w.page = INVALID;
     }
     free_line_count = nlines;
     nand_writes = host_writes = 0;
-    gc_threshold = 1;
   }
 
   void calc_waf() {
@@ -144,9 +147,12 @@ public:
     ceph_assert(handle < ruh_count);
     if (!ruhs[handle].opened) {
       ruhs[handle].opened = true;
-      wps[handle].line = get_next_free_line();
-      wps[handle].page = 0;
-      initially_isolated ? gc_threshold += 1 : gc_threshold += 2;
+      host_wps[handle].line = get_next_free_line();
+      host_wps[handle].page = 0;
+      if (handle == 0 || !initially_isolated) {
+	gc_wps[handle].line = get_next_free_line();
+	gc_wps[handle].page = 0;
+      }
     }
     ruhs[handle].initially_isolated = initially_isolated;
   }
@@ -158,21 +164,21 @@ public:
     for (uint64_t lpn = start_lpn; lpn < last_lpn; ++lpn) {
       invalidate_lpn(lpn);
 
-      lines[wps[handle].line].pages[wps[handle].page].lpn   = lpn;
-      lines[wps[handle].line].pages[wps[handle].page].valid = true;
-      ++lines[wps[handle].line].vpc;
-      ceph_assert(lines[wps[handle].line].vpc <= pages_per_line);
+      lines[host_wps[handle].line].pages[host_wps[handle].page].lpn   = lpn;
+      lines[host_wps[handle].line].pages[host_wps[handle].page].valid = true;
+      ++lines[host_wps[handle].line].vpc;
+      ceph_assert(lines[host_wps[handle].line].vpc <= pages_per_line);
 
-      l2p[lpn].line = wps[handle].line;
-      l2p[lpn].page = wps[handle].page;
-      advance_write_pointer(handle);
+      l2p[lpn].line = host_wps[handle].line;
+      l2p[lpn].page = host_wps[handle].page;
+      advance_write_pointer(handle, true);
 
       if (++host_writes % 100000 == 0) {
 	calc_waf();
       }
     }
 
-    if (free_line_count <= gc_threshold) {
+    if (free_line_count == 1) {
       do_gc();
     }
   }
@@ -226,12 +232,12 @@ private:
   const uint32_t  pages_per_line;
   const uint16_t  ruh_count;
   const uint64_t  lpn_count;
-  uint16_t        gc_threshold;
 
   std::vector<ruh>  ruhs;
   std::vector<line> lines;
   std::vector<ppa>  l2p;
-  std::vector<wp>   wps;
+  std::vector<wp>   host_wps;
+  std::vector<wp>   gc_wps;
   uint32_t          free_line_count;
 
   uint64_t          nand_writes;
@@ -256,15 +262,16 @@ private:
     }
   }
 
-  void advance_write_pointer(int handle) {
-    ++wps[handle].page;
-    if (wps[handle].page == pages_per_line) {
-      wps[handle].page = 0;
-      lines[wps[handle].line].writing = false;
-      ceph_assert(lines[wps[handle].line].vpc +
-                  lines[wps[handle].line].ipc == pages_per_line);
-      wps[handle].line = get_next_free_line();
-      lines[wps[handle].line].handle = handle;
+  void advance_write_pointer(int handle, bool host) {
+    auto &wp = host ? host_wps[handle] : gc_wps[handle];
+    ++wp.page;
+    if (wp.page == pages_per_line) {
+      wp.page = 0;
+      lines[wp.line].writing = false;
+      ceph_assert(lines[wp.line].vpc +
+                  lines[wp.line].ipc == pages_per_line);
+      wp.line = get_next_free_line();
+      lines[wp.line].handle = handle;
     }
     ++nand_writes;
   }
@@ -311,8 +318,8 @@ private:
       auto &pg = victim_line.pages[i];
       if (pg.valid) {
 	const int dst_handle = initially_isolated ? 0 : handle;
-	auto &wp = wps[dst_handle];
-	auto &ln = lines[wps[dst_handle].line];
+	auto &wp = gc_wps[dst_handle];
+	auto &ln = lines[wp.line];
 
         ln.pages[wp.page].lpn   = pg.lpn;
         ln.pages[wp.page].valid = true;
@@ -321,7 +328,7 @@ private:
 	l2p[pg.lpn].line = wp.line;
 	l2p[pg.lpn].page = wp.page;
 
-	advance_write_pointer(dst_handle);
+	advance_write_pointer(dst_handle, false);
 	pg.valid = false;
 	pg.lpn = INVALID;
       }

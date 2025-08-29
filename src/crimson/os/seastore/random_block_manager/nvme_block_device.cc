@@ -40,11 +40,11 @@ open_ertr::future<> NVMeBlockDevice::open(
       }
       if (&tools::waf::open_ruh) {
         // Handle 1 for journal.
-        tools::waf::open_ruh(1, false /* initially_isolated */);
-        // Handle 2 for warm data.
+        tools::waf::open_ruh(1, true /* initially_isolated */);
+        // Handle 2 for non-logical things.
         tools::waf::open_ruh(2, true /* initially_isolated */);
-        // Handle 3 for hot data.
-        tools::waf::open_ruh(3, false /* initially_isolated */);
+        // Handle 3 for frequently accessed things.
+        tools::waf::open_ruh(3, true /* initially_isolated */);
         // Handle 0 for others.
       }
       return seastar::open_file_dma(in_path, mode).then([=, this](auto file) {

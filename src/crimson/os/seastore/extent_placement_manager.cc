@@ -1107,14 +1107,12 @@ RandomBlockOolWriter::do_write(
     }
 
     uint16_t stream = 0;
-    if (ex->get_prior_instance()) {
-      stream = 3;
-    } else if (ex->is_logical()) {
+    if (!ex->is_logical()) {
+      stream = 2;
+    } else {
       auto laddr = std::hash<uint64_t>()(std::hash<laddr_t>()(ex->template cast<LogicalCachedExtent>()->get_laddr()));
       if (cms.query(laddr) >= 2) {
         stream = 3;
-      } else if (cms.query(laddr) == 1) {
-        stream = 2;
       }
       cms.add(laddr);
     }

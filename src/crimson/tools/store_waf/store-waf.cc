@@ -47,7 +47,7 @@ seastar::future<bufferptr> generate_random_bp(uint64_t size)
 // From tools/store_bench/store-bench.cc
 seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store) {
   uint64_t prefill_size = 128<<10;
-  uint64_t size_per_shard = 28000ULL<<20;
+  uint64_t size_per_shard = 56000ULL<<20;
   uint64_t size_per_obj = 4<<20;
   uint64_t colls_per_shard = 16;
   uint64_t io_concurrency_per_shard = 16;
@@ -253,7 +253,7 @@ int main(int argc, char **argv) {
   ::mkdir("store_waf_dir", 0755);
   int fd = ::open("store_waf_dir/block", O_CREAT|O_RDWR|O_TRUNC, 0644);
   ceph_assert(fd >= 0);
-  ::ftruncate(fd, 29.76 * 1000 * 1000 * 1000);
+  ::ftruncate(fd, 59.52 * 1000 * 1000 * 1000);
   ::close(fd);
 
   return app.run(seastar_argv.size(), seastar_argv.data(),
@@ -268,7 +268,7 @@ int main(int argc, char **argv) {
         // co_await crimson::common::local_conf().set_val("seastore_segment_size", "1_M");
       } else {
         co_await crimson::common::local_conf().set_val("seastore_main_device_type", "RANDOM_BLOCK_SSD");
-        co_await crimson::common::local_conf().set_val("seastore_cbjournal_size", "20971520" /* 20MB */);
+        co_await crimson::common::local_conf().set_val("seastore_cbjournal_size", "25165824" /* 24MB */);
       }
 
       auto store = crimson::os::FuturizedStore::create(

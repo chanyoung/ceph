@@ -11,12 +11,12 @@
 namespace {
 
 // Based on Open-Channel SSD (OCSSD) 1.2 geometry.
-// RAW = 32 GiB, USER = 29.76 GB, OP = 7%.
+// RAW = 64 GiB, USER = 59.52 GB, OP = 7 %.
 constexpr uint32_t nchannels        = 2;
 constexpr uint32_t luns_per_channel = 2;
 constexpr uint32_t planes_per_lun   = 4;
 constexpr uint32_t blocks_per_plane = 256;
-constexpr uint32_t pages_per_block  = 2048;
+constexpr uint32_t pages_per_block  = 4096;
 // On modern SSDs, page sizes of 16KB or 32KB are common. However,
 // using such sizes would complicate WAF simulation by requiring
 // additional concepts, since the page size would no longer align with
@@ -24,7 +24,7 @@ constexpr uint32_t pages_per_block  = 2048;
 // values, it adopts a 4KB page size which is directly matching the
 // mapping table, to keep the implementation as simple as possible.
 constexpr uint32_t page_nbytes      = 4ULL * 1024;
-constexpr uint64_t user_capacity    = 29.76 * 1000 * 1000 * 1000;
+constexpr uint64_t user_capacity    = 59.52 * 1000 * 1000 * 1000;
 
 // Summary:
 //

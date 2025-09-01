@@ -1067,8 +1067,19 @@ RandomBlockOolWriter::do_write(
     }
 
     uint16_t stream = 0;
-    if (!ex->is_logical()) {
+    auto type = ex->get_type();
+    if (type == extent_types_t::LADDR_INTERNAL || type == extent_types_t::LADDR_LEAF) {
       stream = 2;
+    } else if (type == extent_types_t::OMAP_INNER || type == extent_types_t::OMAP_LEAF) {
+      stream = 3;
+    } else if (type == extent_types_t::ONODE_BLOCK_STAGED) {
+      stream = 4;
+    } else if (type == extent_types_t::COLL_BLOCK) {
+      stream = 5;
+    } else if (type == extent_types_t::RETIRED_PLACEHOLDER) {
+      stream = 6;
+    } else if (type == extent_types_t::BACKREF_INTERNAL || type == extent_types_t::BACKREF_LEAF) {
+      stream = 7;
     }
     // TODO : allocate a consecutive address based on a transaction
     if (writes.size() != 0 &&

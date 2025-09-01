@@ -17,6 +17,8 @@
 #include "crimson/os/seastore/journal/record_submitter.h"
 #include "crimson/os/seastore/async_cleaner.h"
 
+#include "crimson/tools/store_waf/waf_write_hook.h"
+
 namespace crimson::os::seastore {
   class SegmentProvider;
   class JournalTrimmer;
@@ -223,6 +225,13 @@ class CircularJournalSpace : public JournalAllocator {
   seastar::future<> update_journal_tail(
     journal_seq_t dirty,
     journal_seq_t alloc) {
+    auto old_dirty = get_rbm_addr(header.dirty_tail);
+    auto new_dirty = get_rbm_addr(dirty);
+    auto size = old_dirty < new_dirty ? new_dirty - old_dirty : 0;
+    if (&tools::waf::record_discard) {
+      tools::waf::record_discard(old_dirty, size);
+    }
+
     header.dirty_tail = dirty;
     header.alloc_tail = alloc;
     return write_header(

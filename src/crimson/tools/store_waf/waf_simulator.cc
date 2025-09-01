@@ -129,12 +129,13 @@ public:
       w.line = w.page = INVALID;
     }
     free_line_count = nlines;
-    nand_writes = host_writes = 0;
+    used_bytes = nand_writes = host_writes = 0;
   }
 
   void calc_waf() {
     std::cout << "[WAF - fdp " << fdp_enabled << "] " <<
-      nand_writes * 100 / host_writes << " %" << std::endl;
+      nand_writes * 100 / host_writes << " % (disk usage:" <<
+      used_bytes * 100ULL / user_capacity << " %)" << std::endl;
     nand_writes = host_writes = 0;
   }
 
@@ -163,6 +164,7 @@ public:
 
     for (uint64_t lpn = start_lpn; lpn < last_lpn; ++lpn) {
       invalidate_lpn(lpn);
+      used_bytes += page_nbytes;
 
       lines[host_wps[handle].line].pages[host_wps[handle].page].lpn   = lpn;
       lines[host_wps[handle].line].pages[host_wps[handle].page].valid = true;
@@ -242,6 +244,7 @@ private:
 
   uint64_t          nand_writes;
   uint64_t          host_writes;
+  uint64_t          used_bytes;
 
   void invalidate_lpn(uint64_t lpn) {
     ceph_assert(lpn < lpn_count);
@@ -259,6 +262,7 @@ private:
                   <= pages_per_line);
 
       l2p[lpn].addr = INVALID;
+      used_bytes -= page_nbytes;
     }
   }
 

@@ -57,7 +57,7 @@ std::string generate_random_string(int key_size) {
 seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store) {
   uint64_t prefill_size = 128<<10;
   //uint64_t size_per_shard = 56000ULL<<20;
-  uint64_t size_per_shard = 46000ULL<<20;
+  uint64_t size_per_shard = 54000ULL<<20;
   uint64_t size_per_obj = 4<<20;
   uint64_t colls_per_shard = 16;
   uint64_t io_concurrency_per_shard = 16;

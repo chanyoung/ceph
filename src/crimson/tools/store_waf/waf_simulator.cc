@@ -118,6 +118,7 @@ public:
     }
     for (auto &r : ruhs) {
       r.opened = r.initially_isolated = false;
+      r.used_bytes = r.total_writes = page_nbytes; // prevent divide by zero.
     }
     for (auto &e : l2p) {
       e.addr = INVALID;
@@ -137,6 +138,16 @@ public:
       nand_writes * 100 / host_writes << " % (disk usage:" <<
       used_bytes * 100ULL / user_capacity << " %)" << std::endl;
     nand_writes = host_writes = 0;
+    for (int i = 0; i < ruh_count; i++) {
+      if (!ruhs[i].opened) {
+	continue;
+      }
+      std::cout << "[RU" << i <<
+	" - " << ruhs[i].used_bytes <<
+	" - " << ruhs[i].total_writes <<
+	" - " << ruhs[i].used_bytes * 100ULL / user_capacity << " %" <<
+	" - " << ruhs[i].total_writes * 100ULL / ruhs[i].used_bytes << " %" << std::endl;
+    }
   }
 
   void register_device(uint64_t total_bytes) {
@@ -165,6 +176,8 @@ public:
     for (uint64_t lpn = start_lpn; lpn < last_lpn; ++lpn) {
       invalidate_lpn(lpn);
       used_bytes += page_nbytes;
+      ruhs[handle].used_bytes += page_nbytes;
+      ruhs[handle].total_writes += page_nbytes;
 
       lines[host_wps[handle].line].pages[host_wps[handle].page].lpn   = lpn;
       lines[host_wps[handle].line].pages[host_wps[handle].page].valid = true;
@@ -207,6 +220,8 @@ private:
   typedef struct reclaim_unit_handle {
     bool opened;
     bool initially_isolated;
+    uint64_t used_bytes;
+    uint64_t total_writes;
   } ruh;
 
   typedef struct nand_page {
@@ -263,6 +278,7 @@ private:
 
       l2p[lpn].addr = INVALID;
       used_bytes -= page_nbytes;
+      ruhs[lines[mapped.line].handle].used_bytes -= page_nbytes;
     }
   }
 

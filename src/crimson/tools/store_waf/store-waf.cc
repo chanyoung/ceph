@@ -21,15 +21,24 @@
 #include "crimson/os/futurized_store.h"
 
 // From tools/store_bench/store-bench.cc
-ghobject_t create_hobj(unsigned id) {
-  return ghobject_t(shard_id_t::NO_SHARD, seastar::this_shard_id(),
-    id, "", "", 0, ghobject_t::NO_GEN);
+ghobject_t create_hobj(unsigned id, bool rbd) {
+  if (rbd) {
+    return ghobject_t(shard_id_t::NO_SHARD, seastar::this_shard_id(),
+      id, "rbd", "", 0, ghobject_t::NO_GEN);
+  } else {
+    return ghobject_t(shard_id_t::NO_SHARD, seastar::this_shard_id(),
+      id, "rgw", "", 0, ghobject_t::NO_GEN);
+  }
 };
 
 // From tools/store_bench/store-bench.cc
-coll_t make_cid(int obj_id, int num_objects_per_collection) {
+coll_t make_cid(int obj_id, int num_objects_per_collection, bool rbd) {
   int pg_id = obj_id / num_objects_per_collection;
-  return coll_t(spg_t(pg_t(pg_id, 0)));
+  if (rbd) {
+    return coll_t(spg_t(pg_t(pg_id, 0)));
+  } else {
+    return coll_t(spg_t(pg_t(pg_id, 1)));
+  }
 }
 
 seastar::future<bufferptr> generate_random_bp(uint64_t size)
@@ -54,18 +63,41 @@ std::string generate_random_string(int key_size) {
 }
 
 // From tools/store_bench/store-bench.cc
-seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store) {
+seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store, std::string workload) {
   uint64_t prefill_size = 128<<10;
-  //uint64_t size_per_shard = 56000ULL<<20;
-  uint64_t size_per_shard = 54000ULL<<20;
-  uint64_t size_per_obj = 4<<20;
+  uint64_t rbd_size_per_shard;
+  uint64_t rgw_size_per_shard;
+  uint64_t rbd_size_per_obj = 4<<20;
+  uint64_t rgw_size_per_obj = 4<<19;  // 2MB. Actual distribution is 1.9MB.
   uint64_t colls_per_shard = 16;
   uint64_t io_concurrency_per_shard = 16;
-  auto get_obj_per_shard = [&]() {
-    return (size_per_shard + size_per_obj - 1) / size_per_obj;
+
+  if (workload == "rbd") {
+    rbd_size_per_shard = 55000ULL<<20;
+    rgw_size_per_shard = 0;
+  } else if (workload == "rgw") {
+    rbd_size_per_shard = 0;
+    rgw_size_per_shard = 52000ULL<<20;
+  } else if (workload == "mix") {
+    rbd_size_per_shard = 27500ULL<<20;
+    rgw_size_per_shard = 26000ULL<<20;
+  } else {
+    ceph_abort();
+  }
+
+  auto get_obj_per_shard = [&](bool rbd) {
+    if (rbd) {
+      return (rbd_size_per_shard + rbd_size_per_obj - 1) / rbd_size_per_obj;
+    } else {
+      return (rgw_size_per_shard + rgw_size_per_obj - 1) / rgw_size_per_obj;
+    }
   };
-  auto get_obj_per_coll = [&]() {
-    return (get_obj_per_shard() + colls_per_shard - 1) / colls_per_shard;
+  auto get_obj_per_coll = [&](bool rbd) {
+    if (rbd) {
+      return (get_obj_per_shard(rbd) + colls_per_shard - 1) / colls_per_shard;
+    } else {
+      return (get_obj_per_shard(rbd) + colls_per_shard - 1) / colls_per_shard;
+    }
   };
   auto random_buffer = co_await generate_random_bp(16<<20);
   auto get_random_buffer = [&random_buffer](uint64_t size) {
@@ -83,7 +115,7 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store) {
     return bl;
   };
   // Any size smaller than CEPH_PAGE_SIZE (4KB) is rounded up to 4KB.
-  static const int dist_table[100] = {
+  static const int rbd_dist_table[100] = {
     //  0.5B  ( 4%)
     // 0,0,0,0,
     7,7,7,7,
@@ -119,27 +151,59 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store) {
     // 64.0KB ( 3%)
     11,11,11,
   };
-  static const size_t sizes[] = {
+  static const size_t rbd_sizes[] = {
     512, 1024, 1536, 2048, 2560,
     3072, 3584, 4096, 8192,
     16384, 32768, 65536
   };
+  static const int rgw_dist_table[100] = {
+    //  4.0KB (30%)
+    0,0,0,0,0,0,0,0,0,0,    0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,
+    // 64.0KB (20%)
+    1,1,1,1,1,1,1,1,1,1,    1,1,1,1,1,1,1,1,1,1,
+    //  2.0MB (35%)
+    2,2,2,2,2,2,2,2,2,2,    2,2,2,2,2,2,2,2,2,2,
+    2,2,2,2,2,2,2,2,2,2,    2,2,2,2,2,
+    //  8.0MB (15%)
+    3,3,3,3,3,3,3,3,3,3,    3,3,3,3,3,
+  };
+  static const size_t rgw_sizes[] = {
+    4096, 65536, 2097152, 8388608
+  };
 
   auto &local_store = global_store.get_sharded_store();
 
-  std::vector<std::pair<coll_t, crimson::os::CollectionRef>> coll_refs;
+  std::vector<std::pair<coll_t, crimson::os::CollectionRef>> rbd_coll_refs;
   for (uint64_t collidx = 0; collidx < colls_per_shard; ++collidx) {
     coll_t cid(
       spg_t(pg_t(0, (seastar::this_shard_id() * colls_per_shard) + collidx))
     );
     auto ref = co_await local_store.create_new_collection(cid);
-    coll_refs.emplace_back(std::make_pair(cid, std::move(ref)));
+    rbd_coll_refs.emplace_back(std::make_pair(cid, std::move(ref)));
   }
-  auto get_coll_id = [&](uint64_t obj_id) {
-    return coll_refs[obj_id / get_obj_per_coll()].first;
+  std::vector<std::pair<coll_t, crimson::os::CollectionRef>> rgw_coll_refs;
+  for (uint64_t collidx = 0; collidx < colls_per_shard; ++collidx) {
+    coll_t cid(
+      spg_t(pg_t(0, (seastar::this_shard_id() * colls_per_shard) + collidx))
+    );
+    auto ref = co_await local_store.create_new_collection(cid);
+    rgw_coll_refs.emplace_back(std::make_pair(cid, std::move(ref)));
+  }
+
+  auto get_coll_id = [&](uint64_t obj_id, bool rbd) {
+    if (rbd) {
+      return rbd_coll_refs[obj_id / get_obj_per_coll(rbd)].first;
+    } else {
+      return rgw_coll_refs[obj_id / get_obj_per_coll(rbd)].first;
+    }
   };
-  auto get_coll_ref = [&](uint64_t obj_id) {
-    return coll_refs[obj_id / get_obj_per_coll()].second;
+  auto get_coll_ref = [&](uint64_t obj_id, bool rbd) {
+    if (rbd) {
+      return rbd_coll_refs[obj_id / get_obj_per_coll(rbd)].second;
+    } else {
+      return rgw_coll_refs[obj_id / get_obj_per_coll(rbd)].second;
+    }
   };
 
   unsigned running = 0;
@@ -163,33 +227,54 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store) {
     });
   };
 
-  auto target_keys_per_bucket = 16384;
+  auto omap_object_per_rgw_objects = 50;
+  auto target_keys_per_bucket = 60000;
   auto key_size = 50;
   auto value_size = 50;
-  std::vector<std::set<std::string>> keys_per_bucket(get_obj_per_shard() / 100 + 1);
+  std::vector<std::set<std::string>> keys_per_bucket(get_obj_per_shard(false) / omap_object_per_rgw_objects + 1);
 
-  for (uint64_t obj_id = 0; obj_id < get_obj_per_shard(); ++obj_id) {
-    auto hobj = create_hobj(obj_id);
-    auto coll_id = get_coll_id(obj_id);
-    auto coll_ref = get_coll_ref(obj_id);
+  for (uint64_t obj_id = 0; obj_id < get_obj_per_shard(true); ++obj_id) {
+    auto hobj = create_hobj(obj_id, true);
+    auto coll_id = get_coll_id(obj_id, true);
+    auto coll_ref = get_coll_ref(obj_id, true);
 
     {
       ceph::os::Transaction t;
       t.create(coll_id, hobj);
       co_await submit_transaction(coll_ref, std::move(t));
     }
-    for (uint64_t off = 0; off < size_per_obj; off += prefill_size) {
+    for (uint64_t off = 0; off < rbd_size_per_obj; off += prefill_size) {
       ceph::os::Transaction t;
       t.write(coll_id, hobj, off, prefill_size, get_random_buffer(prefill_size));
       co_await submit_transaction(coll_ref, std::move(t));
     }
 
-    if (keys_per_bucket[obj_id/100].size() == 0) {
-      auto omap_obj_id = obj_id / 100;
+    std::cout << "wrote rbd obj " << obj_id << " of " << get_obj_per_shard(true) << std::endl;
+  }
 
-      hobj = create_hobj(omap_obj_id);
-      coll_id = get_coll_id(omap_obj_id);
-      coll_ref = get_coll_ref(omap_obj_id);
+  for (uint64_t obj_id = 0; obj_id < get_obj_per_shard(false); ++obj_id) {
+    auto hobj = create_hobj(obj_id, false);
+    auto coll_id = get_coll_id(obj_id, false);
+    auto coll_ref = get_coll_ref(obj_id, false);
+
+    {
+      ceph::os::Transaction t;
+      t.create(coll_id, hobj);
+      co_await submit_transaction(coll_ref, std::move(t));
+    }
+    {
+      uint64_t io_size = rgw_sizes[rgw_dist_table[std::experimental::randint<int>(0, 99)]];
+      ceph::os::Transaction t;
+      t.write(coll_id, hobj, 0, io_size, get_random_buffer(io_size));
+      co_await submit_transaction(coll_ref, std::move(t));
+    }
+
+    if (keys_per_bucket[obj_id/omap_object_per_rgw_objects].size() == 0) {
+      auto omap_obj_id = obj_id / omap_object_per_rgw_objects;
+
+      hobj = create_hobj(omap_obj_id, false);
+      coll_id = get_coll_id(omap_obj_id, false);
+      coll_ref = get_coll_ref(omap_obj_id, false);
 
       std::map<std::string, bufferlist> omap_for_this_bucket;
       std::set<std::string> keys_in_this_bucket;
@@ -210,102 +295,145 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store) {
       co_await submit_transaction(coll_ref, std::move(txn_write_omap_for_bucket));
     }
 
-    std::cout << "wrote obj " << obj_id << " of " << get_obj_per_shard() << std::endl;
+    std::cout << "wrote rgw obj " << obj_id << " of " << get_obj_per_shard(false) << std::endl;
   }
 
   std::cout << "finished populating" << std::endl;
 
-  std::vector<int> size_per_bucket(get_obj_per_shard() / 100 + 1, target_keys_per_bucket);
+  std::vector<int> size_per_bucket(get_obj_per_shard(false) / omap_object_per_rgw_objects + 1, target_keys_per_bucket);
   // min and max size is the range of allowable bucket size
   int min_size =
       std::floor(target_keys_per_bucket * (0.5));
   int max_size =
       std::ceil(target_keys_per_bucket * (1.5));
 
-  static const int p1 =  get_obj_per_shard() * 0.05;
-  static const int p2 =  get_obj_per_shard() * 0.20;
+  static const int rbd_p1 = get_obj_per_shard(true) * 0.05;
+  static const int rbd_p2 = get_obj_per_shard(true) * 0.20;
+  static const int rgw_p1 = get_obj_per_shard(false) * 0.05;
+  static const int rgw_p2 = get_obj_per_shard(false) * 0.20;
+
   while (true) {
-    int obj_id;
     int p = std::experimental::randint<int>(0, 99);
-    if (p < 50) {
-      obj_id = std::experimental::randint<int>(0, p1-1);
-    } else if (p < 80) {
-      obj_id = std::experimental::randint<int>(p1, p2-1);
-    } else {
-      obj_id = std::experimental::randint<int>(p2, get_obj_per_shard()-1);
-    }
-    auto hobj = create_hobj(obj_id);
-    auto coll_id = get_coll_id(obj_id);
-    auto coll_ref = get_coll_ref(obj_id);
+    if (rbd_p1 > 0) {
+      int rbd_obj_id;
+      if (p < 50) {
+        rbd_obj_id = std::experimental::randint<int>(0, rbd_p1-1);
+      } else if (p < 80) {
+        rbd_obj_id = std::experimental::randint<int>(rbd_p1, rbd_p2-1);
+      } else {
+        rbd_obj_id = std::experimental::randint<int>(rbd_p2, get_obj_per_shard(true)-1);
+      }
 
-    uint64_t io_size = sizes[dist_table[std::experimental::randint<int>(0, 99)]];
-    auto offset = std::experimental::randint<uint64_t>(
+      auto hobj = create_hobj(rbd_obj_id, true);
+      auto coll_id = get_coll_id(rbd_obj_id, true);
+      auto coll_ref = get_coll_ref(rbd_obj_id, true);
+
+      uint64_t io_size = rbd_sizes[rbd_dist_table[std::experimental::randint<int>(0, 99)]];
+      auto offset = std::experimental::randint<uint64_t>(
 	0,
-	(size_per_obj / io_size) - 1) * io_size;
+	(rbd_size_per_obj / io_size) - 1) * io_size;
 
-    ceph::os::Transaction t;
-    t.write(
+      ceph::os::Transaction t;
+      t.write(
 	coll_id,
 	hobj,
 	offset,
 	io_size,
 	get_random_buffer(io_size));
-    co_await submit_transaction(coll_ref, std::move(t));
+      co_await submit_transaction(coll_ref, std::move(t));
+    }
 
-    // One RGW write per two RBD writes
-    if (obj_id % 2 == 0) {
-      auto omap_obj_id = obj_id / 100;
-
-      hobj = create_hobj(omap_obj_id);
-      coll_id = get_coll_id(omap_obj_id);
-      coll_ref = get_coll_ref(omap_obj_id);
-
-      int size_bucket_we_choose = size_per_bucket[omap_obj_id];
-      auto &keys_in_that_bucket = keys_per_bucket[omap_obj_id];
-
-      // this case happens when the size of the bucket is min size and we choose
-      // to delete
-      if (size_bucket_we_choose <= min_size) {
-write_one_key:
-        std::string new_key = generate_random_string(key_size);
-        while (keys_in_that_bucket.count(new_key) > 0) {
-          new_key = generate_random_string(key_size);
-        }
-	keys_in_that_bucket.insert(new_key);
-
-	bufferlist value;
-	value.append_zero(value_size);
-
-	std::map<std::string, bufferlist> data_entry;
-	data_entry[new_key] = value;
-
-        ceph::os::Transaction one_write;
-        one_write.omap_setkeys(coll_id, hobj, data_entry);
-        co_await submit_transaction(coll_ref, std::move(one_write));
-
-        size_per_bucket[omap_obj_id] += 1;
-      } else if (size_bucket_we_choose >= max_size) {
-delete_one_key:
-        int index = std::rand() % keys_in_that_bucket.size();
-	auto it = keys_in_that_bucket.begin();
-        std::advance(it, index);
-        std::string key_to_delete = *it;
-        keys_in_that_bucket.erase(it);
-
-        ceph::os::Transaction one_delete;
-        one_delete.omap_rmkey(coll_id, hobj, key_to_delete);
-        co_await submit_transaction(coll_ref, std::move(one_delete));
-
-        size_per_bucket[omap_obj_id] -= 1;
+    if (rgw_p1 > 0) {
+      int rgw_obj_id;
+retry:
+      if (p < 50) {
+        rgw_obj_id = std::experimental::randint<int>(0, rgw_p1-1);
+      } else if (p < 80) {
+        rgw_obj_id = std::experimental::randint<int>(rgw_p1, rgw_p2-1);
       } else {
-        int choice = std::rand() % 2;
-        // choice 0 is write, choice 1 is delete
-        if (choice == 0) {
-	  goto write_one_key;
-        } else {
-	  goto delete_one_key;
-        }
-      };
+        rgw_obj_id = std::experimental::randint<int>(rgw_p2, get_obj_per_shard(false)-1);
+      }
+
+      auto omap_obj_id = rgw_obj_id / omap_object_per_rgw_objects;
+      if (omap_obj_id == rgw_obj_id) {
+	goto retry;
+      }
+
+      {
+        auto hobj = create_hobj(rgw_obj_id, false);
+        auto coll_id = get_coll_id(rgw_obj_id, false);
+        auto coll_ref = get_coll_ref(rgw_obj_id, false);
+	{
+	  ceph::os::Transaction t;
+	  t.remove(coll_id, hobj);
+	  co_await submit_transaction(coll_ref, std::move(t));
+	}
+	{
+	  ceph::os::Transaction t;
+	  t.create(coll_id, hobj);
+	  co_await submit_transaction(coll_ref, std::move(t));
+	}
+	{
+          uint64_t io_size = rgw_sizes[rgw_dist_table[std::experimental::randint<int>(0, 99)]];
+	  ceph::os::Transaction t;
+	  t.write(coll_id, hobj, 0, io_size, get_random_buffer(io_size));
+	  co_await submit_transaction(coll_ref, std::move(t));
+	}
+      }
+
+      // 1 delete and 1 create object.
+      for (int i = 0; i < 2; ++i) {
+	auto hobj = create_hobj(omap_obj_id, false);
+	auto coll_id = get_coll_id(omap_obj_id, false);
+	auto coll_ref = get_coll_ref(omap_obj_id, false);
+
+        int size_bucket_we_choose = size_per_bucket[omap_obj_id];
+	auto &keys_in_that_bucket = keys_per_bucket[omap_obj_id];
+
+	// this case happens when the size of the bucket is min size and we choose
+	// to delete
+	if (size_bucket_we_choose <= min_size) {
+write_one_key:
+	  std::string new_key = generate_random_string(key_size);
+	  while (keys_in_that_bucket.count(new_key) > 0) {
+	    new_key = generate_random_string(key_size);
+	  }
+	  keys_in_that_bucket.insert(new_key);
+
+	  bufferlist value;
+	  value.append_zero(value_size);
+
+	  std::map<std::string, bufferlist> data_entry;
+	  data_entry[new_key] = value;
+
+	  ceph::os::Transaction one_write;
+	  one_write.omap_setkeys(coll_id, hobj, data_entry);
+	  co_await submit_transaction(coll_ref, std::move(one_write));
+
+	  size_per_bucket[omap_obj_id] += 1;
+	} else if (size_bucket_we_choose >= max_size) {
+delete_one_key:
+	  int index = std::rand() % keys_in_that_bucket.size();
+	  auto it = keys_in_that_bucket.begin();
+	  std::advance(it, index);
+	  std::string key_to_delete = *it;
+	  keys_in_that_bucket.erase(it);
+
+	  ceph::os::Transaction one_delete;
+	  one_delete.omap_rmkey(coll_id, hobj, key_to_delete);
+	  co_await submit_transaction(coll_ref, std::move(one_delete));
+
+	  size_per_bucket[omap_obj_id] -= 1;
+	} else {
+	  int choice = std::rand() % 2;
+	  // choice 0 is write, choice 1 is delete
+	  if (choice == 0) {
+	    goto write_one_key;
+	  } else {
+	    goto delete_one_key;
+	  }
+	};
+      }
     }
   }
 
@@ -315,10 +443,13 @@ delete_one_key:
 int main(int argc, char **argv) {
   namespace po = boost::program_options;
   po::options_description desc{"Allowed options"};
+  std::string workload;
   bool segmented;
 
   desc.add_options()
     ("help,h", "show help message")
+    ("workload", po::value<std::string>(&workload)->default_value("rbd"),
+      "workload type: rbd or rgw or mix")
     ("segmented-ssd", po::value<bool>(&segmented)->default_value(false),
      "use seastore random block ssd device type");
    po::variables_map vm;
@@ -393,7 +524,7 @@ int main(int argc, char **argv) {
       co_await store->mount().handle_error(
         crimson::stateful_ec::assert_failure("mount error"));
 
-      co_await cbw_workload(*store);
+      co_await cbw_workload(*store, workload);
 
       co_await store->umount();
       co_await store->stop();

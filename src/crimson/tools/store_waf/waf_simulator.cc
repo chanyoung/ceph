@@ -101,7 +101,7 @@ public:
       full_stripe(!fdp_enabled),
       nlines(blocks_per_plane),
       pages_per_line(nchannels * luns_per_channel * planes_per_lun * pages_per_block),
-      ruh_count(full_stripe ? 1 : 8),
+      ruh_count(full_stripe ? 1 : 16),
       lpn_count(user_capacity / page_nbytes + 1),
       ruhs(ruh_count),
       lines(nlines),
@@ -190,7 +190,7 @@ public:
       l2p[lpn].page = host_wps[handle].page;
       advance_write_pointer(handle, true);
 
-      if (++host_writes % 400000 == 0) {
+      if (++host_writes % 1000000 == 0) {
 	calc_waf();
       }
     }

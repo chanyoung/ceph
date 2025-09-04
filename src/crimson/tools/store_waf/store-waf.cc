@@ -78,7 +78,7 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store, std::s
     // rgw_size_per_shard = 0;
 
     // 80%
-    rbd_size_per_shard = 4600ULL<<20;
+    rbd_size_per_shard = 3660ULL<<20;
     rgw_size_per_shard = 0;
   } else if (workload == "rgw") {
     // 100%
@@ -87,15 +87,15 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store, std::s
 
     // 80%
     rbd_size_per_shard = 0;
-    rgw_size_per_shard = 4160ULL<<20;
+    rgw_size_per_shard = 3460ULL<<20;
   } else if (workload == "mix") {
     // 100%
     // rbd_size_per_shard = 2750ULL<<20;
     // rgw_size_per_shard = 2600ULL<<20;
 
     // 80%
-    rbd_size_per_shard = 2300ULL<<20;
-    rgw_size_per_shard = 2080ULL<<20;
+    rbd_size_per_shard = 1830ULL<<20;
+    rgw_size_per_shard = 1730ULL<<20;
   } else {
     ceph_abort();
   }
@@ -489,7 +489,7 @@ int main(int argc, char **argv) {
 
   std::vector<std::string> seastar_args;
   seastar_args.emplace_back("--smp");
-  seastar_args.emplace_back("10");
+  seastar_args.emplace_back("12");
 
   std::vector<char*> seastar_argv;
   seastar_argv.push_back(const_cast<char*>(argv[0]));

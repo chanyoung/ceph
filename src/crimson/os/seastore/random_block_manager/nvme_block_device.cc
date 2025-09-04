@@ -45,23 +45,38 @@ open_ertr::future<> NVMeBlockDevice::open(
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       seastar::future<> fut = tools::waf::open_ruh
-        // Handle 2 for laddr extents.
+        // Handle 2 for journal.
 	? tools::waf::open_ruh(2, true /* initially_isolated */)
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       seastar::future<> fut = tools::waf::open_ruh
-        // Handle 3 for omap extents.
+        // Handle 3 for journal.
 	? tools::waf::open_ruh(3, true /* initially_isolated */)
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       seastar::future<> fut = tools::waf::open_ruh
-        // Handle 4 for onode extents.
+        // Handle 4 for journal.
 	? tools::waf::open_ruh(4, true /* initially_isolated */)
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       seastar::future<> fut = tools::waf::open_ruh
-        // Handle 5 for backref extents.
+        // Handle 5 for laddr extents.
 	? tools::waf::open_ruh(5, true /* initially_isolated */)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
+        // Handle 6 for omap extents.
+	? tools::waf::open_ruh(6, true /* initially_isolated */)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
+        // Handle 7 for onode extents.
+	? tools::waf::open_ruh(7, true /* initially_isolated */)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
+        // Handle 8 for backref extents.
+	? tools::waf::open_ruh(8, true /* initially_isolated */)
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       return seastar::open_file_dma(in_path, mode).then([=, this](auto file) {
@@ -87,6 +102,9 @@ open_ertr::future<> NVMeBlockDevice::open(
           logger().error("open: id ctrlr failed. open without ioctl");
           return open_for_io(in_path, mode);
         }), crimson::ct_error::pass_further_all{});
+      });
+      });
+      });
       });
       });
       });

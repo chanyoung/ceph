@@ -1,8 +1,10 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include <seastar/core/semaphore.hh>
 #include "crimson/tools/store_waf/waf_write_hook.h"
 #include "include/ceph_assert.h"
+#include <seastar/core/smp.hh>
 
 #include <cstring>
 #include <unordered_map>
@@ -188,7 +190,7 @@ public:
       l2p[lpn].page = host_wps[handle].page;
       advance_write_pointer(handle, true);
 
-      if (++host_writes % 100000 == 0) {
+      if (++host_writes % 400000 == 0) {
 	calc_waf();
       }
     }
@@ -369,43 +371,60 @@ struct multiplexer {
   waf_simulator base{false /* FDP disable */ };
   waf_simulator fdp{true /* FDP enable */ };
 
-  void register_device(uint64_t total_bytes) {
+  seastar::future<> register_device(uint64_t total_bytes) {
     base.register_device(total_bytes);
     fdp.register_device(total_bytes);
+    return seastar::make_ready_future<>();
   }
 
-  void open_ruh(uint16_t handle, bool initially_isolated) {
-    return fdp.open_ruh(handle, initially_isolated);
+  seastar::future<> open_ruh(uint16_t handle, bool initially_isolated) {
+    fdp.open_ruh(handle, initially_isolated);
+    return seastar::make_ready_future<>();
   }
 
-  void record_write(uint64_t off, uint64_t bytes, uint16_t handle) {
+  seastar::future<> record_write(uint64_t off, uint64_t bytes, uint16_t handle) {
     base.record_write(off, bytes, 0);
     fdp.record_write(off, bytes, handle);
+    return seastar::make_ready_future<>();
   }
 
-  void record_discard(uint64_t off, uint64_t bytes) {
+  seastar::future<> record_discard(uint64_t off, uint64_t bytes) {
     base.record_discard(off, bytes);
     fdp.record_discard(off, bytes);
+    return seastar::make_ready_future<>();
   }
 };
 
-static multiplexer mux;
+static multiplexer& global_mux() {
+  static multiplexer m;            
+  return m;
+}
+
+static constexpr unsigned mux_home = 0;
 }
 
 namespace crimson::tools::waf {
-  void register_device(uint64_t total_bytes) {
-    mux.register_device(total_bytes);
+  seastar::future<> register_device(uint64_t total_bytes) {
+    return seastar::smp::submit_to(mux_home, [total_bytes] () -> seastar::future<> {
+      return global_mux().register_device(total_bytes);
+    });
   }
 
-  void open_ruh(uint16_t handle, bool initially_isolated) {
-    mux.open_ruh(handle, initially_isolated);
+  seastar::future<> open_ruh(uint16_t handle, bool initially_isolated) {
+    return seastar::smp::submit_to(mux_home, [handle, initially_isolated] () -> seastar::future<> {
+      return global_mux().open_ruh(handle, initially_isolated);
+    });
   }
 
-  void record_write(uint64_t offset, uint64_t bytes, uint16_t handle) {
-    mux.record_write(offset, bytes, handle);
+  seastar::future<> record_write(uint64_t offset, uint64_t bytes, uint16_t handle) {
+    return seastar::smp::submit_to(mux_home, [offset, bytes, handle] () -> seastar::future<> {
+      return global_mux().record_write(offset, bytes, handle);
+    });
   }
 
-  void record_discard(uint64_t offset, uint64_t bytes) {
-    mux.record_discard(offset, bytes);
+  seastar::future<> record_discard(uint64_t off, uint64_t bytes) {
+    return seastar::smp::submit_to(mux_home, [off, bytes] () -> seastar::future<> {
+      return global_mux().record_discard(off, bytes);
+    });
   }
 }

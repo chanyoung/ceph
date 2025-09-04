@@ -62,9 +62,6 @@ static write_ertr::future<> do_write(
   auto len = bptr.length();
   TRACE("{} poffset=0x{:x}~0x{:x} ...",
         device_id_printer_t{device_id}, offset, len);
-  if (&tools::waf::record_write) {
-    tools::waf::record_write(offset, len, 0);
-  }
   return device.dma_write(
     offset,
     bptr.c_str(),
@@ -114,9 +111,6 @@ static write_ertr::future<> do_writev(
       auto& iov = p.iov;
       TRACE("{} poffset=0x{:x}~0x{:x} dma_write ...",
             device_id_printer_t{device_id}, off, len);
-      if (&tools::waf::record_write) {
-        tools::waf::record_write(off, len, 0);
-      }
       return device.dma_write(off, std::move(iov)
       ).handle_exception(
         [FNAME, device_id, off, len](auto e) -> write_ertr::future<size_t>
@@ -273,9 +267,6 @@ open_device_ret open_device(
         stat.size = size;
         INFO("path={} successful, size=0x{:x}, block_size=0x{:x}",
              path, stat.size, stat.block_size);
-        if (&tools::waf::register_device) {
-          tools::waf::register_device(stat.size);
-        }
         return std::make_pair(file, stat);
       });
     });

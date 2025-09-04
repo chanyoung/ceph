@@ -73,14 +73,29 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store, std::s
   uint64_t io_concurrency_per_shard = 16;
 
   if (workload == "rbd") {
-    rbd_size_per_shard = 55000ULL<<20;
+    // 100%
+    // rbd_size_per_shard = 5500ULL<<20;
+    // rgw_size_per_shard = 0;
+
+    // 80%
+    rbd_size_per_shard = 4600ULL<<20;
     rgw_size_per_shard = 0;
   } else if (workload == "rgw") {
+    // 100%
+    // rbd_size_per_shard = 0;
+    // rgw_size_per_shard = 5200ULL<<20;
+
+    // 80%
     rbd_size_per_shard = 0;
-    rgw_size_per_shard = 52000ULL<<20;
+    rgw_size_per_shard = 4160ULL<<20;
   } else if (workload == "mix") {
-    rbd_size_per_shard = 27500ULL<<20;
-    rgw_size_per_shard = 26000ULL<<20;
+    // 100%
+    // rbd_size_per_shard = 2750ULL<<20;
+    // rgw_size_per_shard = 2600ULL<<20;
+
+    // 80%
+    rbd_size_per_shard = 2300ULL<<20;
+    rgw_size_per_shard = 2080ULL<<20;
   } else {
     ceph_abort();
   }
@@ -249,7 +264,7 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store, std::s
       co_await submit_transaction(coll_ref, std::move(t));
     }
 
-    std::cout << "wrote rbd obj " << obj_id << " of " << get_obj_per_shard(true) << std::endl;
+    std::cout << "[" << seastar::this_shard_id() << "] wrote rbd obj " << obj_id << " of " << get_obj_per_shard(true) << std::endl;
   }
 
   for (uint64_t obj_id = 0; obj_id < get_obj_per_shard(false); ++obj_id) {
@@ -295,10 +310,10 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store, std::s
       co_await submit_transaction(coll_ref, std::move(txn_write_omap_for_bucket));
     }
 
-    std::cout << "wrote rgw obj " << obj_id << " of " << get_obj_per_shard(false) << std::endl;
+    std::cout << "[" << seastar::this_shard_id() << "] wrote rgw obj " << obj_id << " of " << get_obj_per_shard(false) << std::endl;
   }
 
-  std::cout << "finished populating" << std::endl;
+  std::cout << "[" << seastar::this_shard_id() << "] finished populating" << std::endl;
 
   std::vector<int> size_per_bucket(get_obj_per_shard(false) / omap_object_per_rgw_objects + 1, target_keys_per_bucket);
   // min and max size is the range of allowable bucket size
@@ -474,9 +489,7 @@ int main(int argc, char **argv) {
 
   std::vector<std::string> seastar_args;
   seastar_args.emplace_back("--smp");
-  seastar_args.emplace_back("1");
-  seastar_args.emplace_back("--thread-affinity");
-  seastar_args.emplace_back("0");
+  seastar_args.emplace_back("10");
 
   std::vector<char*> seastar_argv;
   seastar_argv.push_back(const_cast<char*>(argv[0]));
@@ -524,7 +537,19 @@ int main(int argc, char **argv) {
       co_await store->mount().handle_error(
         crimson::stateful_ec::assert_failure("mount error"));
 
-      co_await cbw_workload(*store, workload);
+      std::vector<seastar::future<>> per_shard_futures;
+      auto named_lambda = [&, &store_ref = *store]()
+        -> seastar::future<> {
+          co_return co_await cbw_workload(store_ref, workload);
+      };
+      for (unsigned i = 0; i < seastar::smp::count; ++i) {
+	per_shard_futures.push_back(
+	    seastar::smp::submit_to(i, std::move(named_lambda)));
+      }
+
+      for (unsigned i = 0; i < per_shard_futures.size(); ++i) {
+	co_await std::move(per_shard_futures[i]);
+      }
 
       co_await store->umount();
       co_await store->stop();

@@ -35,22 +35,35 @@ open_ertr::future<> NVMeBlockDevice::open(
   seastar::open_flags mode) {
   return seastar::do_with(in_path, [this, mode](auto& in_path) {
     return seastar::file_stat(in_path).then([this, mode, in_path](auto stat) {
-      if (&tools::waf::register_device) {
-        tools::waf::register_device(stat.size);
-      }
-      if (&tools::waf::open_ruh) {
+      seastar::future<> fut = tools::waf::register_device
+	? tools::waf::register_device(stat.size)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
         // Handle 1 for journal.
-        tools::waf::open_ruh(1, true /* initially_isolated */);
+	? tools::waf::open_ruh(1, true /* initially_isolated */)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
         // Handle 2 for laddr extents.
-        tools::waf::open_ruh(2, true /* initially_isolated */);
+	? tools::waf::open_ruh(2, true /* initially_isolated */)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
         // Handle 3 for omap extents.
-        tools::waf::open_ruh(3, true /* initially_isolated */);
+	? tools::waf::open_ruh(3, true /* initially_isolated */)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
         // Handle 4 for onode extents.
-        tools::waf::open_ruh(4, true /* initially_isolated */);
+	? tools::waf::open_ruh(4, true /* initially_isolated */)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
         // Handle 5 for backref extents.
-        tools::waf::open_ruh(5, true /* initially_isolated */);
-        // Handle 0 for others.
-      }
+	? tools::waf::open_ruh(5, true /* initially_isolated */)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
       return seastar::open_file_dma(in_path, mode).then([=, this](auto file) {
         device = std::move(file);
         logger().debug("open");
@@ -74,6 +87,12 @@ open_ertr::future<> NVMeBlockDevice::open(
           logger().error("open: id ctrlr failed. open without ioctl");
           return open_for_io(in_path, mode);
         }), crimson::ct_error::pass_further_all{});
+      });
+      });
+      });
+      });
+      });
+      });
       });
     });
   });
@@ -135,9 +154,10 @@ write_ertr::future<> NVMeBlockDevice::write(
       offset,
       bptr.length());
   auto length = bptr.length();
-  if (&tools::waf::record_write) {
-    tools::waf::record_write(offset, length, stream);
-  }
+  seastar::future<> fut = tools::waf::record_write
+	? tools::waf::record_write(offset, length, stream)
+	: seastar::make_ready_future<>();
+  return fut.then([=, this] {
 
   assert((length % super.block_size) == 0);
   uint16_t supported_stream = stream;
@@ -166,6 +186,7 @@ write_ertr::future<> NVMeBlockDevice::write(
       }
       return write_ertr::now();
     });
+  });
   });
 }
 
@@ -207,9 +228,10 @@ write_ertr::future<> NVMeBlockDevice::writev(
     "block: write offset {} len {}",
     offset,
     bl.length());
-  if (&tools::waf::record_write) {
-    tools::waf::record_write(offset, bl.length(), stream);
-  }
+  seastar::future<> fut = tools::waf::record_write
+	? tools::waf::record_write(offset, bl.length(), stream)
+	: seastar::make_ready_future<>();
+  return fut.then([this, offset, stream, bl = std::move(bl)]() mutable -> write_ertr::future<> {
 
   uint16_t supported_stream = stream;
   if (stream >= stream_id_count) {
@@ -252,6 +274,7 @@ write_ertr::future<> NVMeBlockDevice::writev(
         return write_ertr::now();
       });
     });
+    });
   });
 }
 
@@ -284,10 +307,12 @@ NVMeBlockDevice::identify_controller(seastar::file f) {
 }
 
 discard_ertr::future<> NVMeBlockDevice::discard(uint64_t offset, uint64_t len) {
-  if (&tools::waf::record_discard) {
-    tools::waf::record_discard(offset, len);
-  }
+  seastar::future<> fut = tools::waf::record_discard
+	? tools::waf::record_discard(offset, len)
+	: seastar::make_ready_future<>();
+  return fut.then([=, this] {
   return device.discard(offset, len);
+  });
 }
 
 nvme_command_ertr::future<nvme_identify_namespace_data_t>

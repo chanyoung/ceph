@@ -47,12 +47,8 @@ open_ertr::future<> NVMeBlockDevice::open(
         tools::waf::open_ruh(3, true /* initially_isolated */);
         // Handle 4 for onode extents.
         tools::waf::open_ruh(4, true /* initially_isolated */);
-        // Handle 5 for collection extents.
+        // Handle 5 for backref extents.
         tools::waf::open_ruh(5, true /* initially_isolated */);
-        // Handle 6 for retired placeholder extents.
-        tools::waf::open_ruh(6, true /* initially_isolated */);
-        // Handle 7 for backref extents.
-        tools::waf::open_ruh(7, true /* initially_isolated */);
         // Handle 0 for others.
       }
       return seastar::open_file_dma(in_path, mode).then([=, this](auto file) {

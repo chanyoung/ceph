@@ -107,7 +107,8 @@ public:
       lines(nlines),
       l2p(lpn_count),
       host_wps(ruh_count),
-      gc_wps(ruh_count)
+      gc_wps(ruh_count),
+      line_age(0)
   {
     for (auto &l : lines) {
       l.used = l.writing = false;
@@ -120,7 +121,7 @@ public:
     }
     for (auto &r : ruhs) {
       r.opened = r.initially_isolated = false;
-      r.used_bytes = r.total_writes = page_nbytes; // prevent divide by zero.
+      r.used_bytes = r.total_writes = 0;
     }
     for (auto &e : l2p) {
       e.addr = INVALID;
@@ -141,7 +142,7 @@ public:
       used_bytes * 100ULL / user_capacity << " %)" << std::endl;
     nand_writes = host_writes = 0;
     for (int i = 0; i < ruh_count; i++) {
-      if (!ruhs[i].opened) {
+      if (!ruhs[i].opened || ruhs[i].used_bytes == 0) {
 	continue;
       }
       std::cout << "[RU" << i <<
@@ -153,7 +154,7 @@ public:
   }
 
   void register_device(uint64_t total_bytes) {
-    ceph_assert(total_bytes == user_capacity);
+    //ceph_assert(total_bytes == user_capacity);
     open_ruh(0, true);
   }
 
@@ -162,9 +163,11 @@ public:
     if (!ruhs[handle].opened) {
       ruhs[handle].opened = true;
       host_wps[handle].line = get_next_free_line();
+      lines[host_wps[handle].line].handle = handle;
       host_wps[handle].page = 0;
       if (handle == 0 || !initially_isolated) {
 	gc_wps[handle].line = get_next_free_line();
+        lines[gc_wps[handle].line].handle = handle;
 	gc_wps[handle].page = 0;
       }
     }
@@ -238,6 +241,7 @@ private:
     int               handle;
     bool              writing;
     bool              used;
+    uint64_t          age;
   } line;
 
   typedef struct write_pointer {
@@ -258,6 +262,7 @@ private:
   std::vector<wp>   host_wps;
   std::vector<wp>   gc_wps;
   uint32_t          free_line_count;
+  uint64_t          line_age;
 
   uint64_t          nand_writes;
   uint64_t          host_writes;
@@ -288,6 +293,11 @@ private:
     auto &wp = host ? host_wps[handle] : gc_wps[handle];
     ++wp.page;
     if (wp.page == pages_per_line) {
+      std::cout << "[line - fdp " << fdp_enabled << " - "
+        << handle
+        << "] invalid ratio: "
+        << lines[wp.line].ipc * 100 / pages_per_line
+        << " %" << std::endl;
       wp.page = 0;
       lines[wp.line].writing = false;
       ceph_assert(lines[wp.line].vpc +
@@ -306,6 +316,7 @@ private:
 	lines[i].used = true;
 	lines[i].writing = true;
 	--free_line_count;
+	lines[i].age = line_age++;
 	return i;
       }
     }
@@ -314,13 +325,21 @@ private:
 
   void do_gc() {
     uint32_t victim_line_n = INVALID;
-    uint32_t victim_ipc  = 0;
+    double   best_score = -1.0;
+
+    constexpr double alpha = 0.25; // weight factor for line age
+    constexpr uint32_t T_half = 64; // half-life threshold in line-age steps
+    constexpr double eps = 1.0; // to avoid division by zero
 
     for (uint32_t i = 0; i < nlines; ++i) {
       if (lines[i].writing) continue;
-      if (lines[i].ipc > victim_ipc) {
+      uint32_t age_steps = line_age - lines[i].age;
+      double age_norm = double(age_steps) / (double(age_steps) + T_half);
+      double age_factor = 1.0 + alpha * age_norm;
+      double score = (double)lines[i].ipc / (double(lines[i].vpc) + eps) * age_factor;
+      if (score > best_score) {
+	best_score = score;
 	victim_line_n = i;
-	victim_ipc = lines[i].ipc;
       }
     }
     ceph_assert(victim_line_n != INVALID);
@@ -355,6 +374,11 @@ private:
 	advance_write_pointer(dst_handle, false);
 	pg.valid = false;
 	pg.lpn = INVALID;
+
+	if (handle != dst_handle) {
+          ruhs[handle].used_bytes -= page_nbytes;
+          ruhs[dst_handle].used_bytes += page_nbytes;
+	}
       }
     }
 

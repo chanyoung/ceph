@@ -20,6 +20,10 @@
 #include "crimson/os/futurized_collection.h"
 #include "crimson/os/futurized_store.h"
 
+//#define USAGE70
+#define USAGE80
+//#define USAGE90
+
 // From tools/store_bench/store-bench.cc
 ghobject_t create_hobj(unsigned id, bool rbd) {
   if (rbd) {
@@ -73,13 +77,19 @@ seastar::future<> cbw_workload(crimson::os::FuturizedStore &global_store, std::s
   uint64_t io_concurrency_per_shard = 16;
 
   if (workload == "rbd") {
-    // 100%
-    // rbd_size_per_shard = 5500ULL<<20;
-    // rgw_size_per_shard = 0;
-
-    // 80%
-    rbd_size_per_shard = 3660ULL<<20;
+#ifdef USAGE70
+    rbd_size_per_shard = 3250ULL<<20;
     rgw_size_per_shard = 0;
+#elif defined(USAGE80)
+    rbd_size_per_shard = 3650ULL<<20;
+    rgw_size_per_shard = 0;
+#elif defined(USAGE90)
+    rbd_size_per_shard = 4150ULL<<20;
+    rgw_size_per_shard = 0;
+#else
+    rbd_size_per_shard = 4550ULL<<20;
+    rgw_size_per_shard = 0;
+#endif
   } else if (workload == "rgw") {
     // 100%
     // rbd_size_per_shard = 0;
@@ -502,7 +512,15 @@ int main(int argc, char **argv) {
   ::mkdir("store_waf_dir", 0755);
   int fd = ::open("store_waf_dir/block", O_CREAT|O_RDWR|O_TRUNC, 0644);
   ceph_assert(fd >= 0);
+#ifdef USAGE70
+  ::ftruncate(fd, 41.67 * 1000 * 1000 * 1000);
+#elif defined(USAGE80)
+  ::ftruncate(fd, 47.62 * 1000 * 1000 * 1000);
+#elif defined(USAGE90)
+  ::ftruncate(fd, 53.57 * 1000 * 1000 * 1000);
+#else
   ::ftruncate(fd, 59.52 * 1000 * 1000 * 1000);
+#endif
   ::close(fd);
 
   return app.run(seastar_argv.size(), seastar_argv.data(),
@@ -518,6 +536,7 @@ int main(int argc, char **argv) {
       } else {
         co_await crimson::common::local_conf().set_val("seastore_main_device_type", "RANDOM_BLOCK_SSD");
         co_await crimson::common::local_conf().set_val("seastore_cbjournal_size", "25165824" /* 24MB */);
+        co_await crimson::common::local_conf().set_val("seastore_cachepin_size_pershard", "67108864" /* 64MB: 0.1% of capacity */);
       }
 
       auto store = crimson::os::FuturizedStore::create(

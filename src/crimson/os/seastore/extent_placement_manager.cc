@@ -1072,30 +1072,20 @@ RandomBlockOolWriter::do_write(
     uint16_t stream = 0;
     auto type = ex->get_type();
     if (type == extent_types_t::LADDR_INTERNAL || type == extent_types_t::LADDR_LEAF) {
-      static thread_local double laddr_avg_version = 0.0;
-      static thread_local double laddr_alpha = 0.01;
-      if (ex->get_prior_instance()) {
+      if (ex->get_prior_instance() && ex->get_prior_instance()->get_version() > 2) {
 	auto tx = t.get_trans_id();
-	auto v = ex->get_prior_instance()->get_version();
-	double delta = (double)v - laddr_avg_version;
-	laddr_avg_version += laddr_alpha * delta;
-	double threshold = laddr_avg_version;
-	if (v > threshold) {
-          stream = 7;
-
-	  if (!S1.count(tx)) {
-	    S1.insert(tx);
-	    S2.insert(tx);
-	  }
-	  if (S2.size() >= 100) {
-	    S2.clear();
-	    S1.swap(S2);
-	  }
+	if (!S1.count(tx)) {
+	  S1.insert(tx);
+	  S2.insert(tx);
 	}
+	if (S2.size() >= 100) {
+	  S2.clear();
+	  S1.swap(S2);
+	}
+	stream = 7;
       }
     } else if (type == extent_types_t::BACKREF_INTERNAL || type == extent_types_t::BACKREF_LEAF) {
-      auto tx = t.get_trans_id();
-      bool hot = S1.count(tx);
+      bool hot = S1.count(t.get_trans_id());
       if (hot) {
 	stream = 8;
       }

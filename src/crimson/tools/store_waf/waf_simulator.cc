@@ -101,7 +101,7 @@ public:
       full_stripe(!fdp_enabled),
       nlines(blocks_per_plane),
       pages_per_line(nchannels * luns_per_channel * planes_per_lun * pages_per_block),
-      ruh_count(full_stripe ? 1 : 16),
+      ruh_count(full_stripe ? 1 : 32),
       lpn_count(user_capacity / page_nbytes + 1),
       ruhs(ruh_count),
       lines(nlines),
@@ -300,6 +300,7 @@ private:
         << " %" << std::endl;
       wp.page = 0;
       lines[wp.line].writing = false;
+      lines[wp.line].age = line_age++;
       ceph_assert(lines[wp.line].vpc +
                   lines[wp.line].ipc == pages_per_line);
       wp.line = get_next_free_line();
@@ -315,8 +316,8 @@ private:
 	ceph_assert(lines[i].ipc == 0 && lines[i].vpc == 0);
 	lines[i].used = true;
 	lines[i].writing = true;
+	lines[i].age = INVALID;
 	--free_line_count;
-	lines[i].age = line_age++;
 	return i;
       }
     }

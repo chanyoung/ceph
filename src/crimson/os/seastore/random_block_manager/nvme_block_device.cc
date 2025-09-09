@@ -40,18 +40,43 @@ open_ertr::future<> NVMeBlockDevice::open(
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       seastar::future<> fut = tools::waf::open_ruh
-        // Handle 1 for hot data.
-	? tools::waf::open_ruh(1, true /* initially_isolated */)
+        // Handle 1 for journal.
+	? tools::waf::open_ruh(1, true)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
+        // Handle 1 for journal.
+	? tools::waf::open_ruh(2, true)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
+        // Handle 1 for journal.
+	? tools::waf::open_ruh(3, true)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
+        // Handle 1 for journal.
+	? tools::waf::open_ruh(4, true)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
+        // Handle 1 for journal.
+	? tools::waf::open_ruh(5, true)
+	: seastar::make_ready_future<>();
+      return fut.then([this, mode, in_path] {
+      seastar::future<> fut = tools::waf::open_ruh
+        // Handle 1 for journal.
+	? tools::waf::open_ruh(6, true)
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       seastar::future<> fut = tools::waf::open_ruh
         // Handle 2 for journal.
-	? tools::waf::open_ruh(2, false /* initially_isolated */)
+	? tools::waf::open_ruh(7, true /* initially_isolated */)
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       seastar::future<> fut = tools::waf::open_ruh
-        // Handle 3 for metadata.
-	? tools::waf::open_ruh(3, false /* initially_isolated */)
+        // Handle 3 for journal.
+	? tools::waf::open_ruh(8, true /* initially_isolated */)
 	: seastar::make_ready_future<>();
       return fut.then([this, mode, in_path] {
       return seastar::open_file_dma(in_path, mode).then([=, this](auto file) {
@@ -77,6 +102,11 @@ open_ertr::future<> NVMeBlockDevice::open(
           logger().error("open: id ctrlr failed. open without ioctl");
           return open_for_io(in_path, mode);
         }), crimson::ct_error::pass_further_all{});
+      });
+      });
+      });
+      });
+      });
       });
       });
       });

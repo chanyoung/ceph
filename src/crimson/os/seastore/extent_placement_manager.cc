@@ -1017,69 +1017,6 @@ RandomBlockOolWriter::alloc_write_ool_extents(
   });
 }
 
-struct simple_cms {
-  uint64_t hits = 0;
-  uint64_t misses = 0;
-  uint64_t totals = 0;
-  int w = 4000000;
-  int d = 3;
-  int ops = 0;
-  int decay_period = 10000;
-  int target_hit_ratio = 50;
-  vector<vector<uint8_t>> t;
-
-  simple_cms():t(d,vector<uint8_t>(w)){}
-
-  void add(uint64_t x){
-    for (int i = 0; i < d; i++) {
-      auto &v = t[i][(x + i * 131) % w];
-      if (v < 2) {
-	v++;
-      }
-    }
-    if (++ops % decay_period == 0) {
-      halve();
-    }
-  }
-
-  int query(uint64_t x) {
-    uint8_t r = UINT8_MAX;
-    for (int i = 0; i < d; i++) {
-      r = std::min(r, t[i][(x + i * 131) % w]);
-    }
-    if (r > 0) {
-      hits++;
-    } else {
-      misses++;
-    }
-    totals++;
-    return r;
-  }
-
-  void halve() {
-    std::cout << "halving!!" << std::endl;
-    for (auto &row : t) {
-      for (uint8_t &v : row) {
-	v /= 2;
-      }
-    }
-    ops = 0;
-
-    auto hit_ratio = hits * 100ULL / (totals + 1);
-    std::cout << "hit ratio: " << hit_ratio << " % - " << decay_period << std::endl;
-    hits = misses = totals = 0;
-    if (hit_ratio > target_hit_ratio) {
-      if (decay_period > 100) {
-        decay_period = decay_period - 100;
-      }
-    } else if (hit_ratio < target_hit_ratio) {
-      if (decay_period < 100000) {
-        decay_period = decay_period + 100;
-      }
-    }
-  }
-};
-
 RandomBlockOolWriter::alloc_write_iertr::future<>
 RandomBlockOolWriter::do_write(
   Transaction& t,
@@ -1090,7 +1027,7 @@ RandomBlockOolWriter::do_write(
   DEBUGT("start with {} allocated extents",
          t, extents.size());
   std::vector<write_info_t> writes;
-  static simple_cms cms;
+
   for (auto& ex : extents) {
     auto paddr = ex->get_paddr();
     assert(paddr.is_absolute());
@@ -1130,21 +1067,38 @@ RandomBlockOolWriter::do_write(
       ceph_assert("impossible");
     }
 
+    static thread_local std::unordered_set<uint64_t> S1, S2;
+
     uint16_t stream = 0;
     auto type = ex->get_type();
-    if (type == extent_types_t::OBJECT_DATA_BLOCK) {
-      // 16777216: default logical address space reservation for seastore objects' data
-      constexpr auto tt = 16777216;
-      laddr_offset_t cur{ex->template cast<LogicalCachedExtent>()->get_laddr(), 0};
-      auto laddr = std::hash<uint64_t>()(std::hash<laddr_t>()(cur.get_aligned_laddr(tt)));
-      if (cms.query(laddr) > 0) {
-	stream = 1;
+    if (type == extent_types_t::LADDR_INTERNAL || type == extent_types_t::LADDR_LEAF) {
+      static thread_local double laddr_avg_version = 0.0;
+      static thread_local double laddr_alpha = 0.01;
+      if (ex->get_prior_instance()) {
+	auto tx = t.get_trans_id();
+	auto v = ex->get_prior_instance()->get_version();
+	double delta = (double)v - laddr_avg_version;
+	laddr_avg_version += laddr_alpha * delta;
+	double threshold = laddr_avg_version;
+	if (v > threshold) {
+          stream = 7;
+
+	  if (!S1.count(tx)) {
+	    S1.insert(tx);
+	    S2.insert(tx);
+	  }
+	  if (S2.size() >= 100) {
+	    S2.clear();
+	    S1.swap(S2);
+	  }
+	}
       }
-      cms.add(laddr);
-    } else if (type == extent_types_t::LADDR_INTERNAL || type == extent_types_t::LADDR_LEAF) {
-      stream = 3;
     } else if (type == extent_types_t::BACKREF_INTERNAL || type == extent_types_t::BACKREF_LEAF) {
-      stream = 3;
+      auto tx = t.get_trans_id();
+      bool hot = S1.count(tx);
+      if (hot) {
+	stream = 8;
+      }
     }
     // TODO : allocate a consecutive address based on a transaction
     if (writes.size() != 0 &&

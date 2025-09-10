@@ -24,6 +24,8 @@
 
 #include "crimson/common/errorator.h"
 
+#define FDP
+
 namespace crimson::os::seastore {
 
 using base_ertr = crimson::errorator<

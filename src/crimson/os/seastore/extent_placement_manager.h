@@ -195,6 +195,7 @@ private:
     ceph::bufferptr bp;
     RandomBlockManager* rbm;
     std::list<ceph::bufferptr> mergeable_bps;
+    uint16_t stream;
   };
   alloc_write_iertr::future<> do_write(
     Transaction& t,

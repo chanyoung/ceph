@@ -22,6 +22,9 @@
    touch store_bench_dir/block
    truncate -s 10G store_bench_dir/block
    ./build/bin/crimson-store-bench --store-path store_bench_dir --smp 4 "$@"
+ *
+ * 80%: ./bin/crimson-store-bench --store-path store_bench_dir --smp 10 --duration 36000 --work-load-type=random_write --size-per-shard 118000000000
+ * 80%: ./bin/crimson-store-bench --store-path store_bench_dir --smp 8 --duration 36000 --work-load-type=random_write --size-per-shard 147000000000
  */
 
 #include <random>
@@ -56,6 +59,7 @@ using namespace ceph;
 
 SET_SUBSYS(osd);
 
+thread_local unsigned sample_count = 1000;
 /**
  * The struct stores the number of operations and the total latency for all
  * these operations For the pg workload type write+delete increases the number
@@ -66,10 +70,15 @@ struct results_t {
   uint64_t ios_completed = 0;
   std::chrono::duration<double> total_latency = 0s;
   std::chrono::duration<double> duration = 0s;
+  std::list<std::chrono::duration<double>> latency_samples;
 
   results_t &operator += (const results_t &other_result) {
     ios_completed += other_result.ios_completed;
     total_latency += other_result.total_latency;
+    latency_samples.insert(
+      latency_samples.end(),
+      other_result.latency_samples.begin(),
+      other_result.latency_samples.end());
     return *this;
   }
 
@@ -81,6 +90,9 @@ struct results_t {
     f->dump_float(
       "total_duration_s",
       duration.count());
+    for (std::chrono::duration<double> lat : latency_samples) {
+      f->dump_float("lat", lat.count());
+    }
   }
 };
 
@@ -637,6 +649,8 @@ seastar::future<results_t> RandomWriteWorkload::run(
   LOG_PREFIX(random_write);
   auto &local_store = global_store.get_sharded_store();
 
+  std::cout << "[" << seastar::this_shard_id() << "] workload start" << std::endl;
+
   auto random_buffer = co_await generate_random_bp(16<<20);
   auto get_random_buffer = [&random_buffer](uint64_t size) {
     assert((size % CEPH_PAGE_SIZE) == 0);
@@ -676,10 +690,10 @@ seastar::future<results_t> RandomWriteWorkload::run(
    coll_refs.emplace_back(std::make_pair(cid, std::move(ref)));
   }
   auto get_coll_id = [&](uint64_t obj_id) {
-    return coll_refs[obj_id % get_obj_per_coll()].first;
+    return coll_refs[obj_id % colls_per_shard].first;
   };
   auto get_coll_ref = [&](uint64_t obj_id) {
-    return coll_refs[obj_id % get_obj_per_coll()].second;
+    return coll_refs[obj_id % colls_per_shard].second;
   };
 
   unsigned running = 0;
@@ -703,7 +717,12 @@ seastar::future<results_t> RandomWriteWorkload::run(
       }
       sem.signal(1);
       results.ios_completed++;
-      results.total_latency += ceph::mono_clock::now() - start;
+      auto lat = ceph::mono_clock::now() - start;
+      results.total_latency += lat;
+      results.latency_samples.push_back(lat);
+      if (results.latency_samples.size() > sample_count) {
+        results.latency_samples.pop_front();
+      }
     });
   };
 
@@ -722,15 +741,70 @@ seastar::future<results_t> RandomWriteWorkload::run(
       t.write(coll_id, hobj, off, prefill_size, get_random_buffer(prefill_size));
       co_await submit_transaction(coll_ref, std::move(t));
     }
-    INFO("wrote obj {} of {}", obj_id, get_obj_per_shard());
+    std::cout << "[" << seastar::this_shard_id() << "] wrote obj " << obj_id << " of " << get_obj_per_shard() << std::endl;
   }
 
   INFO("finished populating");
 
+  // Any size smaller than CEPH_PAGE_SIZE (4KB) is rounded up to 4KB.
+  static const int rbd_dist_table[100] = {
+    //  0.5B  ( 4%)
+    // 0,0,0,0,
+    7,7,7,7,
+    //  1.0KB ( 1%)
+    // 1,
+    7,
+    //  1.5KB ( 1%)
+    // 2,
+    7,
+    //  2.0KB ( 1%)
+    // 3,
+    7,
+    //  2.5KB ( 1%)
+    // 4,
+    7,
+    //  3.0KB ( 1%)
+    // 5,
+    7,
+    //  3.5KB ( 1%)
+    // 6,
+    7,
+    //  4.0KB (67%)
+    7,7,7,7,7,7,7,7,7,7,    7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,7,7,7,    7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,7,7,7,    7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,
+    //  8.0KB (10%)
+    8,8,8,8,8,8,8,8,8,8,
+    // 16.0KB ( 7%)
+    9,9,9,9,9,9,9,
+    // 32.0KB ( 3%)
+    10,10,10,
+    // 64.0KB ( 3%)
+    11,11,11,
+  };
+  static const size_t rbd_sizes[] = {
+    512, 1024, 1536, 2048, 2560,
+    3072, 3584, 4096, 8192,
+    16384, 32768, 65536
+  };
+  static const int rbd_p1 = get_obj_per_shard() * 0.05;
+  static const int rbd_p2 = get_obj_per_shard() * 0.20;
+
   auto start = ceph::mono_clock::now();
   uint64_t writes_started = 0;
   while (ceph::mono_clock::now() - start < common.get_duration()) {
-    auto obj_id = std::experimental::randint<uint64_t>(0, get_obj_per_shard() - 1);
+    int p = std::experimental::randint<int>(0, 99);
+    uint64_t obj_id;
+    if (p < 50) {
+      obj_id = std::experimental::randint<uint64_t>(0, rbd_p1-1);
+    } else if (p < 80) {
+      obj_id = std::experimental::randint<uint64_t>(rbd_p1, rbd_p2-1);
+    } else {
+      obj_id = std::experimental::randint<uint64_t>(rbd_p2, get_obj_per_shard()-1);
+    }
+    auto io_size = rbd_sizes[rbd_dist_table[std::experimental::randint<int>(0, 99)]];
+
     auto hobj = create_hobj(obj_id);
     auto coll_id = get_coll_id(obj_id);
     auto coll_ref = get_coll_ref(obj_id);
@@ -738,7 +812,7 @@ seastar::future<results_t> RandomWriteWorkload::run(
     auto offset = std::experimental::randint<uint64_t>(
       0,
       (size_per_obj / io_size) - 1) * io_size;
-    
+
     ceph::os::Transaction t;
     t.write(
       coll_id,
@@ -879,6 +953,9 @@ int main(int argc, char **argv) {
         co_await crimson::common::sharded_conf().start(
             EntityName{}, std::string_view{"ceph"});
         co_await crimson::common::local_conf().start();
+	co_await crimson::common::local_conf().set_val("seastore_main_device_type", "RANDOM_BLOCK_SSD");
+	// co_await crimson::common::local_conf().set_val("seastore_cbjournal_size", "3221225472");
+	co_await crimson::common::local_conf().set_val("seastore_cachepin_size_pershard", "134217728" /* 128M */);
 
         {
           std::vector<const char *> cav;
@@ -891,6 +968,8 @@ int main(int argc, char **argv) {
         auto store = crimson::os::FuturizedStore::create(
             store_type, store_path,
             crimson::common::local_conf().get_config_values());
+
+	std::cout << "create store" << std::endl;
 
         uuid_d uuid;
         uuid.generate_random();
@@ -905,11 +984,13 @@ int main(int argc, char **argv) {
          * the actual return type and crimson/common/errorator.h for the
          * implementation of errorators.
          */
+	std::cout << "store started" << std::endl;
         co_await store->mkfs(uuid).handle_error(
             crimson::stateful_ec::assert_failure(
                 std::format("error creating empty object store type {} in {}",
                             store_type, store_path)
                     .c_str()));
+	std::cout << "mkfs done" << std::endl;
         co_await store->stop();
 
         co_await store->start();
@@ -919,9 +1000,11 @@ int main(int argc, char **argv) {
                             store_type, store_path)
                     .c_str()));
         std::vector<seastar::future<results_t>> per_shard_futures;
+	std::cout << "mount done" << std::endl;
 
         auto named_lambda = [&, &store_ref = *store]()
           -> seastar::future<results_t> {
+	  std::cout << "running " << seastar::this_shard_id() << std::endl;
           DEBUG("running example_io on reactor {}", seastar::this_shard_id());
           auto iter = workloads.find(work_load_type);
           if (iter != workloads.end()) {

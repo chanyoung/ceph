@@ -129,7 +129,8 @@ bool BlockRBManager::check_valid_range(rbm_abs_addr addr, bufferptr &bptr) {
 
 BlockRBManager::write_ertr::future<> BlockRBManager::write(
   paddr_t paddr,
-  bufferptr bptr)
+  bufferptr bptr,
+  uint16_t stream)
 {
   ceph_assert(device);
   ceph_assert(bptr.is_page_aligned());
@@ -139,7 +140,8 @@ BlockRBManager::write_ertr::future<> BlockRBManager::write(
   }
   return device->write(
     addr,
-    bptr);
+    bptr,
+    stream);
 }
 
 BlockRBManager::read_ertr::future<> BlockRBManager::read(
@@ -166,7 +168,8 @@ BlockRBManager::close_ertr::future<> BlockRBManager::close()
 
 BlockRBManager::write_ertr::future<> BlockRBManager::write(
   rbm_abs_addr addr,
-  bufferlist &bl)
+  bufferlist &bl,
+  uint16_t stream)
 {
   LOG_PREFIX(BlockRBManager::write);
   ceph_assert(device);
@@ -181,7 +184,8 @@ BlockRBManager::write_ertr::future<> BlockRBManager::write(
   }
   return device->write(
     addr,
-    std::move(bptr));
+    std::move(bptr),
+    stream);
 }
 
 #ifdef UNIT_TESTS_BUILT

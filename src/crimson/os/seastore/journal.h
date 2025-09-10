@@ -20,6 +20,9 @@ class SegmentManagerGroup;
 class SegmentProvider;
 class JournalTrimmer;
 
+using discard_ertr = crimson::errorator<
+  crimson::ct_error::input_output_error>;
+
 class Journal {
 public:
   virtual JournalTrimmer &get_trimmer() = 0;

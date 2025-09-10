@@ -1066,6 +1066,31 @@ RandomBlockOolWriter::do_write(
       ceph_assert("impossible");
     }
 
+    uint16_t stream = 0;
+#ifdef FDP
+    static thread_local std::unordered_set<uint64_t> S1, S2;
+    auto type = ex->get_type();
+    if (type == extent_types_t::LADDR_INTERNAL || type == extent_types_t::LADDR_LEAF) {
+      if (ex->get_prior_instance() && ex->get_prior_instance()->get_version() > 2) {
+        auto tx = t.get_trans_id();
+        if (!S1.count(tx)) {
+          S1.insert(tx);
+          S2.insert(tx);
+        }
+        if (S2.size() >= 100) {
+          S2.clear();
+          S1.swap(S2);
+        }
+        stream = 2;
+      }
+    } else if (type == extent_types_t::BACKREF_INTERNAL || type == extent_types_t::BACKREF_LEAF) {
+      bool hot = S1.count(t.get_trans_id());
+      if (hot) {
+        stream = 3;
+      }
+    }
+#endif
+
     // TODO : allocate a consecutive address based on a transaction
     if (writes.size() != 0 &&
         writes.back().offset + writes.back().bp.length() == paddr) {
@@ -1075,12 +1100,14 @@ RandomBlockOolWriter::do_write(
 	 writes.back().mergeable_bps.push_back(writes.back().bp);
       }
       writes.back().mergeable_bps.push_back(ex->get_bptr());
+      writes.back().stream = stream;
     } else {
       // Write a single extent in the existing way
       write_info_t w_info;
       w_info.offset = paddr;
       w_info.rbm = rbm;
       w_info.bp = bp;
+      w_info.stream = stream;
       writes.push_back(w_info);
     }
     TRACE("current extent: {}~0x{:x},\
@@ -1113,7 +1140,7 @@ RandomBlockOolWriter::do_write(
       trans_stats.num_records += writes.size();
       return alloc_write_ertr::parallel_for_each(writes,
         [](auto& info) {
-        return info.rbm->write(info.offset, info.bp
+        return info.rbm->write(info.offset, info.bp, info.stream
         ).handle_error(
           alloc_write_ertr::pass_further{},
           crimson::ct_error::assert_all{

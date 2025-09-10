@@ -223,13 +223,27 @@ class CircularJournalSpace : public JournalAllocator {
   seastar::future<> update_journal_tail(
     journal_seq_t dirty,
     journal_seq_t alloc) {
-    header.dirty_tail = dirty;
-    header.alloc_tail = alloc;
-    return write_header(
-    ).handle_error(
-      crimson::ct_error::assert_all{
-      "encountered invalid error in update_journal_tail"
-    });
+    /*
+    auto old_dirty = get_rbm_addr(header.dirty_tail);
+    auto new_dirty = get_rbm_addr(dirty);
+    auto size = old_dirty < new_dirty ? new_dirty - old_dirty : 0;
+    seastar::future<> fut = size > 0 ?
+      device->discard(old_dirty, size).handle_error(
+        crimson::ct_error::assert_all{
+        "encountered invalid error in update_journal_tail"
+      })
+      :
+      seastar::make_ready_future<>();
+    return fut.then([=, this] {
+    */
+      header.dirty_tail = dirty;
+      header.alloc_tail = alloc;
+      return write_header(
+      ).handle_error(
+        crimson::ct_error::assert_all{
+        "encountered invalid error in update_journal_tail"
+      });
+    //});
   }
 
   void set_initialized(bool init) {

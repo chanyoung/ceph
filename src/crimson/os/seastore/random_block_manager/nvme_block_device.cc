@@ -3,6 +3,7 @@
 
 #include <sys/mman.h>
 #include <string.h>
+#include <seastar/core/sleep.hh>
 
 #include <fcntl.h>
 
@@ -119,6 +120,7 @@ write_ertr::future<> NVMeBlockDevice::write(
       offset,
       bptr.length());
   auto length = bptr.length();
+  return nvme_write2(offset, bptr.length(), bptr.c_str(), stream);
 
   assert((length % super.block_size) == 0);
   uint16_t supported_stream = stream;
@@ -128,8 +130,8 @@ write_ertr::future<> NVMeBlockDevice::write(
   if (is_end_to_end_data_protection()) {
     return seastar::do_with(
       bptr,
-      [this, offset] (auto &bptr) {
-      return nvme_write(offset, bptr.length(), bptr.c_str());
+      [this, offset, stream] (auto &bptr) {
+      return nvme_write(offset, bptr.length(), bptr.c_str(), stream);
     });
   }
   return seastar::do_with(
@@ -188,6 +190,7 @@ write_ertr::future<> NVMeBlockDevice::writev(
     "block: write offset {} len {}",
     offset,
     bl.length());
+  return nvme_write2(offset, bl.length(), bl.c_str(), stream);
 
   uint16_t supported_stream = stream;
   if (stream >= stream_id_count) {
@@ -196,8 +199,8 @@ write_ertr::future<> NVMeBlockDevice::writev(
   if (is_end_to_end_data_protection()) {
     return seastar::do_with(
       std::move(bl),
-      [this, offset] (auto &bl) {
-      return nvme_write(offset, bl.length(), bl.c_str());
+      [this, offset, stream] (auto &bl) {
+      return nvme_write(offset, bl.length(), bl.c_str(), stream);
     });
   }
   bl.rebuild_aligned(super.block_size);
@@ -381,20 +384,15 @@ nvme_command_ertr::future<> NVMeBlockDevice::initialize_nvme_features() {
 }
 
 write_ertr::future<> NVMeBlockDevice::nvme_write(
-  uint64_t offset, size_t len, void *buffer_ptr) {
+  uint64_t offset, size_t len, void *buffer_ptr, uint16_t stream) {
   return seastar::do_with(
     nvme_io_command_t(),
     [this, offset, len, buffer_ptr] (auto &cmd) {
     cmd.common.opcode = nvme_io_command_t::OPCODE_WRITE;
-    cmd.common.nsid = namespace_id;
+    cmd.common.nsid = 1;
     cmd.common.data_len = len;
-    // To perform checksum offload, we need to set PRACT to 1 and PRCHK to 4
-    // according to NVMe spec.
-    cmd.rw.prinfo_pract = nvme_rw_command_t::PROTECT_INFORMATION_ACTION_ENABLE;
-    cmd.rw.prinfo_prchk = nvme_rw_command_t::PROTECT_INFORMATION_CHECK_GUARD;
     cmd.common.addr = (__u64)(uintptr_t)buffer_ptr;
-    ceph_assert(super.nvme_block_size > 0);
-    auto lba_shift = ffsll(super.nvme_block_size) - 1;
+    auto lba_shift = ffsll(4096) - 1;
     cmd.rw.s_lba = offset >> lba_shift;
     cmd.rw.nlb = (len >> lba_shift) - 1;
     return pass_through_io(cmd
@@ -407,6 +405,103 @@ write_ertr::future<> NVMeBlockDevice::nvme_write(
       return nvme_command_ertr::now();
     });
   });
+}
+
+write_ertr::future<> NVMeBlockDevice::nvme_write2(
+  uint64_t offset, size_t len, void *buffer_ptr, uint16_t stream) {
+    if (len == 0) {
+      return nvme_command_ertr::now();
+    }
+    size_t mintx = 128<<10;
+    auto* remaining = new int(0);
+retry:
+    auto tx = std::min(mintx, len);
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+    memset(sqe, 0, sizeof(struct io_uring_sqe));
+    sqe->opcode = IORING_OP_URING_CMD;
+    sqe->cmd_op = NVME_URING_CMD_IO;
+    sqe->fd = fd;
+
+    struct nvme_uring_cmd *cmd2 = (struct nvme_uring_cmd *)sqe->cmd;
+    memset(cmd2, 0, sizeof(struct nvme_uring_cmd));
+    cmd2->opcode = nvme_io_command_t::OPCODE_WRITE;
+    cmd2->nsid = 1;
+    cmd2->data_len = tx;
+    cmd2->addr = (uint64_t)buffer_ptr;
+    auto lba_shift = ffsll(4096) - 1;
+    auto slba = offset >> lba_shift;
+    auto nlb = (tx >> lba_shift) - 1;
+    cmd2->cdw10 = slba & 0xffffffff;
+    cmd2->cdw11 = slba >> 32;
+#ifdef FDP
+    cmd2->cdw12 = (0x2 & 0xFF) << 20 | nlb;
+    cmd2->cdw13 = (stream << 16);
+#else
+    cmd2->cdw12 = nlb;
+#endif
+
+    ++(*remaining);
+    io_uring_sqe_set_data(sqe, remaining);
+
+    len -= tx;
+    offset += tx;
+    buffer_ptr = (unsigned char*)buffer_ptr + tx;
+    if (len > 0) {
+      goto retry;
+    }
+
+    int submitted = 0;
+    while (submitted < (*remaining)) {
+      int res = io_uring_submit(&ring);
+      if (res < 0) { abort(); }
+      submitted += res;
+    }
+
+    if (wait < 1000) {
+      wait++;
+      while ((*remaining) > 0) {
+        io_uring_cqe *cqe = NULL;
+        io_uring_wait_cqe(&ring, &cqe);
+        assert(cqe->res == 0);
+        io_uring_cqe_seen(&ring, cqe);
+        --(*remaining);
+      }
+      delete remaining;
+      return nvme_command_ertr::now();
+    }
+
+    static constexpr unsigned BATCH = 64;
+    return seastar::do_with(remaining, [this](auto *mine_local) {
+      return seastar::do_until(
+        [mine_local] {
+          if (*mine_local == 0) {
+            delete mine_local;
+            return true;
+          } else {
+            return false;
+          }
+        },
+        [this]() -> seastar::future<> {
+          struct io_uring_cqe* cqes[BATCH];
+          int got = io_uring_peek_batch_cqe(&this->ring, cqes, BATCH);
+          assert(got >= 0);
+
+          if (got > 0) {
+            for (int i = 0; i < got; ++i) {
+              assert(cqes[i]->res == 0);
+              auto *cnt = static_cast<int*>(io_uring_cqe_get_data(cqes[i]));
+              --(*cnt);
+            }
+            io_uring_cq_advance(&this->ring, got);
+            return seastar::make_ready_future<>();
+          }
+          return seastar::yield();
+        }
+      ).then([] {
+        return nvme_command_ertr::now();
+      });
+    });
 }
 
 read_ertr::future<> NVMeBlockDevice::nvme_read(

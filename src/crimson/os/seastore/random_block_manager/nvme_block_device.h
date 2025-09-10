@@ -8,6 +8,7 @@
 
 #include <seastar/core/file.hh>
 #include <linux/nvme_ioctl.h>
+#include <liburing.h>
 
 #include "crimson/osd/exceptions.h"
 #include "crimson/common/layout.h"
@@ -20,6 +21,7 @@ namespace ceph {
 }
 
 namespace crimson::os::seastore::random_block_device::nvme {
+
 /*
  * NVMe protocol structures (nvme_XX, identify_XX)
  *
@@ -250,7 +252,10 @@ public:
     uint16_t stream = 0) final;
 
   write_ertr::future<> nvme_write(
-    uint64_t offset, size_t len, void *buffer_ptr);
+    uint64_t offset, size_t len, void *buffer_ptr, uint16_t stream);
+
+  write_ertr::future<> nvme_write2(
+    uint64_t offset, size_t len, void *buffer_ptr, uint16_t stream);
 
   stat_device_ret stat_device() final {
     return seastar::file_stat(device_path, seastar::follow_symlink::yes
@@ -302,11 +307,25 @@ public:
   }
 
   seastar::future<> start() final {
-    return shard_devices.start(device_path);
+    return shard_devices.start(device_path).then([&] {
+      return shard_devices.invoke_on_all([](NVMeBlockDevice &dev) {
+        dev.fd = ::open("/dev/ng0n1", O_RDONLY);
+        assert(dev.fd >= 0);
+        struct io_uring_params p = {0};
+	p.flags = IORING_SETUP_SQE128 | IORING_SETUP_CQE32;
+        io_uring_queue_init_params(1024, &dev.ring, &p);
+      });
+    });
   }
 
   seastar::future<> stop() final {
-    return shard_devices.stop();
+    return shard_devices.stop().then([&] {
+      return shard_devices.invoke_on_all([](NVMeBlockDevice &dev) {
+        io_uring_queue_exit(&dev.ring);
+        ::close(dev.fd);
+        dev.fd = -1;
+      });
+    });
   }
 
   Device& get_sharded_device() final {
@@ -392,6 +411,9 @@ private:
   int namespace_id; // TODO: multi namespaces
   std::string device_path;
   seastar::sharded<NVMeBlockDevice> shard_devices;
+  int fd;
+  struct io_uring ring;
+  uint64_t wait = 0;
 };
 
 }

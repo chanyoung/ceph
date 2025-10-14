@@ -631,10 +631,20 @@ public:
 
 private:
   bool should_start_trim_dirty() const {
+    /*
+    if (seastar::this_shard_id() == 0) {
+      std::cout << "SHOULD_START_TRIM_DIRTY(): " << (get_dirty_tail_target() > journal_dirty_tail) << std::endl;
+    }
+    */
     return get_dirty_tail_target() > journal_dirty_tail;
   }
 
   bool should_stop_trim_dirty(const journal_seq_t &target) const {
+    /*
+    if (seastar::this_shard_id() == 0) {
+      std::cout << "SHOULD_STOP_TRIM_DIRTY(): " << (target <= journal_dirty_tail) << std::endl;
+    }
+    */
     return target <= journal_dirty_tail;
   }
 
@@ -670,6 +680,14 @@ private:
     return journal_dirty_bytes - config.min_journal_dirty_bytes;
   }
   std::size_t get_dirty_bytes_to_trim() const {
+    /*
+    if (seastar::this_shard_id() == 0) {
+      std::cout << "get_journal_dirty_bytes(): " << get_journal_dirty_bytes() << ", get_max_dirty_bytes_to_trim(): " << get_max_dirty_bytes_to_trim() << ", config.rewrite_dirty_bytes_per_cycle: " << config.rewrite_dirty_bytes_per_cycle << std::endl;
+    }
+    */
+    if (get_journal_dirty_bytes() > 134217728) {
+      std::cout << "[" << seastar::this_shard_id() << "] get_journal_dirty_bytes(): " << get_journal_dirty_bytes() << std::endl;
+    }
     return std::min(get_max_dirty_bytes_to_trim(),
 		    config.rewrite_dirty_bytes_per_cycle);
   }

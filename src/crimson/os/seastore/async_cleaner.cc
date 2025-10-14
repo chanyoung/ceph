@@ -358,9 +358,13 @@ JournalTrimmerImpl::config_t::get_default(
     max_journal_bytes = 16 * roll_size;
   } else {
     assert(type == backend_type_t::RANDOM_BLOCK);
-    min_dirty_bytes = roll_size / 4;
-    target_alloc_bytes = roll_size / 4;
-    target_dirty_bytes = roll_size / 3;
+    //min_dirty_bytes = roll_size / 4;
+    //target_alloc_bytes = roll_size / 4;
+    //target_dirty_bytes = roll_size / 3;
+    //max_journal_bytes = roll_size / 2;
+    min_dirty_bytes = 1<<25;
+    target_alloc_bytes = 1<<25;
+    target_dirty_bytes = 1<<26;
     max_journal_bytes = roll_size / 2;
   }
   return config_t{
@@ -368,7 +372,8 @@ JournalTrimmerImpl::config_t::get_default(
     target_alloc_bytes,
     min_dirty_bytes,
     max_journal_bytes,
-    1<<26,// rewrite_dirty_bytes_per_cycle, 64MB
+    //1<<26,// rewrite_dirty_bytes_per_cycle, 64MB
+    1<<25,// rewrite_dirty_bytes_per_cycle, 32MB
     1<<17,// rewrite_dirty_bytes_per_trans, 128KB
     1<<24 // max_backref_bytes_per_cycle, 16MB
   };
@@ -695,6 +700,11 @@ JournalTrimmerImpl::trim_dirty()
 	CACHE_HINT_NOCACHE,
 	[this, FNAME, target](auto &t)
       {
+        /*
+        if (seastar::this_shard_id() == 0) {
+          std::cout << "START_TRIM_DIRTY" << std::endl;
+        }
+        */
 	DEBUGT("start, dirty_tail={}, target={}",
 	       t, journal_dirty_tail, target);
 	return extent_callback->get_next_dirty_extents(
@@ -703,6 +713,11 @@ JournalTrimmerImpl::trim_dirty()
 	  config.rewrite_dirty_bytes_per_trans
 	).si_then([this, FNAME, &t](auto dirty_list) {
 	  DEBUGT("rewrite {} dirty extents", t, dirty_list.size());
+          /*
+          if (seastar::this_shard_id() == 0) {
+            std::cout << "START_TRIM_DIRTY size: " << dirty_list.size() << std::endl;
+          }
+          */
 	  return seastar::do_with(
 	    std::move(dirty_list),
 	    [this, &t](auto &dirty_list)
@@ -721,6 +736,11 @@ JournalTrimmerImpl::trim_dirty()
     }).safe_then([] {
       return seastar::stop_iteration::no;
     }).finally([this, FNAME, &shard_stats] {
+      /*
+      if (seastar::this_shard_id() == 0) {
+        std::cout << "FINISH_TRIM_DIRTY" << std::endl;
+      }
+      */
       DEBUG("finish, dirty_tail={}", journal_dirty_tail);
 
       assert(shard_stats.pending_bg_num);

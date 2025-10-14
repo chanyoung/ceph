@@ -133,7 +133,7 @@ public:
 
   virtual discard_ertr::future<> discard(
     uint64_t offset,
-    uint64_t len) { return seastar::now(); }
+    uint64_t len) = 0;
 
   virtual open_ertr::future<> open(
       const std::string& path,
@@ -225,6 +225,10 @@ public:
     uint64_t offset,
     bufferptr bptr,
     uint16_t stream = 0) override;
+
+  discard_ertr::future<> discard(
+    uint64_t offset,
+    uint64_t len) override;
 
   using RBMDevice::read;
   read_ertr::future<> read(

@@ -232,6 +232,12 @@ write_ertr::future<> EphemeralRBMDevice::write(
   return write_ertr::now();
 }
 
+discard_ertr::future<> EphemeralRBMDevice::discard(
+  uint64_t offset,
+  uint64_t len) {
+  return discard_ertr::now();
+}
+
 read_ertr::future<> EphemeralRBMDevice::read(
   uint64_t offset,
   bufferptr &bptr) {

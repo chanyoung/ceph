@@ -24,7 +24,7 @@
 
 #include "crimson/common/errorator.h"
 
-#define FDP
+//#define FDP
 
 namespace crimson::os::seastore {
 

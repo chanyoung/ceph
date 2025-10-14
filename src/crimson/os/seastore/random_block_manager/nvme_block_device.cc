@@ -265,7 +265,7 @@ NVMeBlockDevice::identify_controller(seastar::file f) {
 }
 
 discard_ertr::future<> NVMeBlockDevice::discard(uint64_t offset, uint64_t len) {
-  return device.discard(offset, len);
+  return nvme_discard2(offset, len);
 }
 
 nvme_command_ertr::future<nvme_identify_namespace_data_t>
@@ -407,6 +407,64 @@ write_ertr::future<> NVMeBlockDevice::nvme_write(
   });
 }
 
+discard_ertr::future<> NVMeBlockDevice::nvme_discard2(
+  uint64_t offset, size_t len) {
+  if (len == 0) {
+    return nvme_command_ertr::now();
+  }
+  /*
+  if (seastar::this_shard_id() == 0) {
+    std::cout << "DISCARD: " << offset << " + " << len << std::endl;
+  }
+  */
+  /*
+  struct nvme_dsm_range {
+    __le32 cattr;
+    __le32 nlb;
+    __le64 slba;
+  } __attribute__((packed));
+  return seastar::do_with(
+    nvme_io_command_t(),
+    nvme_dsm_range{},
+    [this, offset, len] (auto &cmd, auto &range) {
+    auto lba_shift = ffsll(4096) - 1;
+    range.slba = htole64(offset >> lba_shift);
+    range.nlb = htole32(len >> lba_shift);
+    range.cattr = 0;
+
+    cmd.common.opcode = 0x09;
+    cmd.common.nsid = 1;
+    cmd.common.data_len = sizeof(range);
+    cmd.common.addr = (__u64)(uintptr_t)&range;
+
+    cmd.common.cdw10 = 0;
+    cmd.common.cdw11 = (1u << 2);
+
+    return pass_through_io(cmd
+    ).safe_then([] (auto ret) {
+      ceph_assert(ret == 0);
+      return nvme_command_ertr::now();
+    });
+  });
+  */
+  return io_device[0].discard(
+    offset, len).then_wrapped([] (auto&& f) -> nvme_command_ertr::future<> {
+    return nvme_command_ertr::now();
+  });
+  /*
+  auto lba_shift = ffsll(4096) - 1;
+  std::ostringstream cmd;
+  cmd << "nvme dsm /dev/nvme0n1 -d"
+      << " -b " << (len >> lba_shift)
+      << " -s " << (offset >> lba_shift)
+      << " 2>&1";
+  std::string cmd_str = cmd.str();
+  int rc = std::system(cmd_str.c_str());
+  assert(rc == 0);
+  return nvme_command_ertr::now();
+  */
+}
+
 write_ertr::future<> NVMeBlockDevice::nvme_write2(
   uint64_t offset, size_t len, void *buffer_ptr, uint16_t stream) {
     if (len == 0) {
@@ -434,12 +492,16 @@ retry:
     auto nlb = (tx >> lba_shift) - 1;
     cmd2->cdw10 = slba & 0xffffffff;
     cmd2->cdw11 = slba >> 32;
+    cmd2->cdw12 = (0x2 & 0xFF) << 20 | nlb;
+    cmd2->cdw13 = (stream << 16);
+/*
 #ifdef FDP
     cmd2->cdw12 = (0x2 & 0xFF) << 20 | nlb;
     cmd2->cdw13 = (stream << 16);
 #else
     cmd2->cdw12 = nlb;
 #endif
+*/
 
     ++(*remaining);
     io_uring_sqe_set_data(sqe, remaining);

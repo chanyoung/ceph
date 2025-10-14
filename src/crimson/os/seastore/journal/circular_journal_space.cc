@@ -110,6 +110,7 @@ CircularJournalSpace::open_ret CircularJournalSpace::open(bool is_mkfs) {
     encode(head, bl);
     header = head;
     set_written_to(head.dirty_tail);
+    trimmer_dirty_tail = head.dirty_tail;
     initialized = true;
     DEBUG(
       "initialize header block in CircularJournalSpace length {}, head: {}",
@@ -168,7 +169,8 @@ CircularJournalSpace::device_write_bl(
     offset,
     length);
 #ifdef FDP
-  return device->writev(offset, bl, 1
+  //return device->writev(offset, bl, 3 + (seastar::this_shard_id() % 5)
+  return device->writev(offset, bl, 3
 #else
   return device->writev(offset, bl, 0
 #endif
@@ -236,7 +238,8 @@ CircularJournalSpace::write_header()
   bufferptr bp = bufferptr(ceph::buffer::create_page_aligned(get_block_size()));
   iter.copy(bl.length(), bp.c_str());
 #ifdef FDP
-  return device->write(device->get_shard_journal_start(), std::move(bp), 1
+  //return device->write(device->get_shard_journal_start(), std::move(bp), 3 + (seastar::this_shard_id() % 5)
+  return device->write(device->get_shard_journal_start(), std::move(bp), 3
 #else
   return device->write(device->get_shard_journal_start(), std::move(bp), 0
 #endif

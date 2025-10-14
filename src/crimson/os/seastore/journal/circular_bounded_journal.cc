@@ -76,7 +76,9 @@ CircularBoundedJournal::submit_record(
 	trimmer.get_dirty_tail(),
 	trimmer.get_alloc_tail());
     } else {
-      return seastar::now();
+      return discard_journal_tail(
+	trimmer.get_dirty_tail(),
+	trimmer.get_journal_head());
     }
   });
 }

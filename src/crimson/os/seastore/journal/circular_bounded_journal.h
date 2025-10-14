@@ -111,6 +111,11 @@ public:
    *
    */
 
+  seastar::future<> discard_journal_tail(
+    journal_seq_t dirty,
+    journal_seq_t alloc) {
+    return cjs.discard_journal_tail(dirty, alloc);
+  }
   seastar::future<> update_journal_tail(
     journal_seq_t dirty,
     journal_seq_t alloc) {

@@ -257,6 +257,9 @@ public:
   write_ertr::future<> nvme_write2(
     uint64_t offset, size_t len, void *buffer_ptr, uint16_t stream);
 
+  discard_ertr::future<> nvme_discard2(
+    uint64_t offset, uint64_t len);
+
   stat_device_ret stat_device() final {
     return seastar::file_stat(device_path, seastar::follow_symlink::yes
     ).handle_exception([](auto e) -> stat_device_ret {

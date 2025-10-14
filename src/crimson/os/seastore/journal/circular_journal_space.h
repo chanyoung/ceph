@@ -220,30 +220,112 @@ class CircularJournalSpace : public JournalAllocator {
     return device->read(offset, bptr);
   }
 
+  seastar::future<> discard_journal_tail(
+    journal_seq_t dirty,
+    journal_seq_t alloc) {
+    if (get_rbm_addr(trimmer_dirty_tail) == 0) {
+      trimmer_dirty_tail = dirty;
+      return seastar::now();
+    }
+    auto old_dirty = get_rbm_addr(trimmer_dirty_tail);
+    auto new_dirty = get_rbm_addr(dirty);
+    if (old_dirty < new_dirty) {
+      auto size = new_dirty - old_dirty;
+      seastar::future<> fut = device->discard(old_dirty, size).handle_error(
+        crimson::ct_error::assert_all{
+	  "encountered invalid error in update_journal_tail"
+      });
+      return fut.then([=, this] {
+        trimmer_dirty_tail = dirty;
+        return write_header(
+        ).handle_error(
+          crimson::ct_error::assert_all{
+          "encountered invalid error in update_journal_tail"
+        });
+      });
+    } else if (old_dirty > new_dirty) {
+      auto size = get_journal_end() - old_dirty;
+      seastar::future<> fut = device->discard(old_dirty, size).handle_error(
+        crimson::ct_error::assert_all{
+	  "encountered invalid error in update_journal_tail"
+      });
+      return fut.then([=, this] {
+        auto size2 = new_dirty - device->get_shard_journal_start();
+        seastar::future<> fut2 = device->discard(device->get_shard_journal_start(), size2).handle_error(
+          crimson::ct_error::assert_all{
+	    "encountered invalid error in update_journal_tail"
+        });
+        return fut2.then([=, this] {
+          trimmer_dirty_tail = dirty;
+          return write_header(
+          ).handle_error(
+            crimson::ct_error::assert_all{
+            "encountered invalid error in update_journal_tail"
+          });
+        });
+      });
+    } else {
+      trimmer_dirty_tail = dirty;
+      return seastar::now();
+    }
+  }
+
   seastar::future<> update_journal_tail(
     journal_seq_t dirty,
     journal_seq_t alloc) {
-    /*
-    auto old_dirty = get_rbm_addr(header.dirty_tail);
-    auto new_dirty = get_rbm_addr(dirty);
-    auto size = old_dirty < new_dirty ? new_dirty - old_dirty : 0;
-    seastar::future<> fut = size > 0 ?
-      device->discard(old_dirty, size).handle_error(
-        crimson::ct_error::assert_all{
-        "encountered invalid error in update_journal_tail"
-      })
-      :
-      seastar::make_ready_future<>();
-    return fut.then([=, this] {
-    */
+    if (get_rbm_addr(trimmer_dirty_tail) == 0) {
       header.dirty_tail = dirty;
       header.alloc_tail = alloc;
-      return write_header(
-      ).handle_error(
+      trimmer_dirty_tail = dirty;
+      return seastar::now();
+    }
+    auto old_dirty = get_rbm_addr(trimmer_dirty_tail);
+    auto new_dirty = get_rbm_addr(dirty);
+    if (old_dirty < new_dirty) {
+      auto size = new_dirty - old_dirty;
+      seastar::future<> fut = device->discard(old_dirty, size).handle_error(
         crimson::ct_error::assert_all{
-        "encountered invalid error in update_journal_tail"
+	  "encountered invalid error in update_journal_tail"
       });
-    //});
+      return fut.then([=, this] {
+        header.dirty_tail = dirty;
+        header.alloc_tail = alloc;
+        trimmer_dirty_tail = dirty;
+        return write_header(
+        ).handle_error(
+          crimson::ct_error::assert_all{
+          "encountered invalid error in update_journal_tail"
+        });
+      });
+    } else if (old_dirty > new_dirty) {
+      auto size = get_journal_end() - old_dirty;
+      seastar::future<> fut = device->discard(old_dirty, size).handle_error(
+        crimson::ct_error::assert_all{
+	  "encountered invalid error in update_journal_tail"
+      });
+      return fut.then([=, this] {
+        auto size2 = new_dirty - device->get_shard_journal_start();
+        seastar::future<> fut2 = device->discard(device->get_shard_journal_start(), size2).handle_error(
+          crimson::ct_error::assert_all{
+	    "encountered invalid error in update_journal_tail"
+        });
+        return fut2.then([=, this] {
+          header.dirty_tail = dirty;
+          header.alloc_tail = alloc;
+          trimmer_dirty_tail = dirty;
+          return write_header(
+          ).handle_error(
+            crimson::ct_error::assert_all{
+            "encountered invalid error in update_journal_tail"
+          });
+        });
+      });
+    } else {
+      header.dirty_tail = dirty;
+      header.alloc_tail = alloc;
+      trimmer_dirty_tail = dirty;
+      return seastar::now();
+    }
   }
 
   void set_initialized(bool init) {
@@ -267,6 +349,7 @@ class CircularJournalSpace : public JournalAllocator {
   cbj_header_t header;
   RBMDevice* device;
   journal_seq_t written_to;
+  journal_seq_t trimmer_dirty_tail;
   bool initialized = false;
 };
 

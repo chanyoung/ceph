@@ -1066,28 +1066,21 @@ RandomBlockOolWriter::do_write(
       ceph_assert("impossible");
     }
 
+    // ONODE_BLOCK_STAGED, OMAP_LEAF, OMAP_INNER
     uint16_t stream = 0;
 #ifdef FDP
-    static thread_local std::unordered_set<uint64_t> S1, S2;
     auto type = ex->get_type();
-    if (type == extent_types_t::LADDR_INTERNAL || type == extent_types_t::LADDR_LEAF) {
-      if (ex->get_prior_instance() && ex->get_prior_instance()->get_version() > 2) {
-        auto tx = t.get_trans_id();
-        if (!S1.count(tx)) {
-          S1.insert(tx);
-          S2.insert(tx);
-        }
-        if (S2.size() >= 100) {
-          S2.clear();
-          S1.swap(S2);
-        }
-        stream = 2;
+    if (type == extent_types_t::OBJECT_DATA_BLOCK) {
+      laddr_t laddr = ex->template cast<LogicalCachedExtent>()->get_laddr();
+      if (t.is_hot(laddr)) {
+        stream = 4;
+      } else {
+        stream = 5;
       }
+    } else if (type == extent_types_t::LADDR_INTERNAL || type == extent_types_t::LADDR_LEAF) {
+      stream = 1;
     } else if (type == extent_types_t::BACKREF_INTERNAL || type == extent_types_t::BACKREF_LEAF) {
-      bool hot = S1.count(t.get_trans_id());
-      if (hot) {
-        stream = 3;
-      }
+      stream = 2;
     }
 #endif
 

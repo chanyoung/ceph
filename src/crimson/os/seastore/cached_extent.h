@@ -272,93 +272,6 @@ enum class extent_2q_state_t : uint8_t {
   Max
 };
 
-struct simple_cms {
-  uint64_t w = 512ULL;
-  int d = 2;
-  std::vector<std::vector<uint64_t>> t;
-
-  uint64_t seeds[3] = {
-    0x9E3779B97F4A7C15ULL,
-    0xBF58476D1CE4E5B9ULL,
-    0x94D049BB133111EBULL
-  };
-
-  simple_cms():t(d, std::vector<uint64_t>(w)){}
-
-  static inline uint64_t splitmix64(uint64_t x) {
-    x = (x ^ (x >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
-    x = (x ^ (x >> 27)) * UINT64_C(0x94d049bb133111eb);
-    x = x ^ (x >> 31);
-    return x;
-  }
-
-  static inline uint8_t get2(const std::vector<uint64_t>& row, uint64_t idx) {
-    uint64_t word_i = idx / 32;
-    uint64_t shift  = (idx & 31) * 2;
-    return (row[word_i] >> shift) & 0x3ULL;
-  }
-
-  static inline void set2(std::vector<uint64_t>& row, uint64_t idx, uint8_t v) {
-    uint64_t word_i = idx / 32;
-    uint64_t shift  = (idx & 31) * 2;
-    uint64_t mask   = 0x3ULL << shift;
-    row[word_i] = (row[word_i] & ~mask) | (uint64_t(v & 0x3U) << shift);
-  }
-
-  void add(uint64_t x){
-    for (int i = 0; i < d; i++) {
-      uint64_t idx = splitmix64(x ^ seeds[i]) % w;
-
-      auto &row = t[i];
-      uint8_t v = get2(row, idx);
-      if (v < 2) {
-        set2(row, idx, v+1);
-      }
-    }
-  }
-
-  int query(uint64_t x) {
-    uint8_t r = UINT8_MAX;
-    for (int i = 0; i < d; i++) {
-      uint64_t idx = splitmix64(x ^ seeds[i]) % w;
-      r = std::min<uint8_t>(r, get2(t[i], idx));
-    }
-    return r;
-  }
-
-  int query_and_add(uint64_t x) {
-    uint8_t r = UINT8_MAX;
-    for (int i = 0; i < d; i++) {
-      uint64_t idx = splitmix64(x ^ seeds[i]) % w;
-
-      auto &row = t[i];
-      uint8_t v = get2(row, idx);
-      if (v < 2) {
-        set2(row, idx, v+1);
-      }
-
-      r = std::min<uint8_t>(r, v);
-    }
-    return r;
-  }
-
-  void halve() {
-    for (auto &row : t) {
-      for (uint64_t &v : row) {
-        v = (v >> 1) & 0x5555555555555555ULL;
-      }
-    }
-  }
-
-  void merge(struct simple_cms *other) {
-    for (uint64_t i = 0; i < d; i++) {
-      for (uint64_t j = 0; j < w; j++) {
-        t[i][j] |= other->t[i][j];
-      }
-    }
-  }
-};
-
 class ExtentIndex;
 class CachedExtent
   : public boost::intrusive_ref_counter<
@@ -400,9 +313,6 @@ class CachedExtent
   // time of the last modification
   sea_time_point modify_time = NULL_TIME;
 
-  transaction_id_t last_transaction_id = TRANS_ID_NULL;
-  seastar::lw_shared_ptr<simple_cms> cms;
-
 public:
   void init(extent_state_t _state,
             paddr_t paddr,
@@ -414,9 +324,6 @@ public:
     user_hint = hint;
     rewrite_generation = gen;
     pending_for_transaction = trans_id;
-    if (last_transaction_id == TRANS_ID_NULL) {
-      last_transaction_id = trans_id;
-    }
   }
 
   void set_modify_time(sea_time_point t) {
@@ -429,43 +336,6 @@ public:
 
   transaction_id_t get_pending_transaction_id() {
     return pending_for_transaction;
-  }
-
-  transaction_id_t get_last_transaction_id() {
-    return last_transaction_id;
-  }
-
-  void set_last_transaction_id(transaction_id_t trans_id) {
-    if (trans_id != TRANS_ID_NULL) {
-      last_transaction_id = trans_id;
-    }
-  }
-
-  seastar::lw_shared_ptr<simple_cms> get_cms() {
-    return cms;
-  }
-
-  void set_cms(seastar::lw_shared_ptr<simple_cms> ptr) {
-    cms = ptr;
-  }
-
-  void copy_cms(seastar::lw_shared_ptr<simple_cms> ptr) {
-    if (ptr) {
-      cms = seastar::make_lw_shared<simple_cms>(*ptr);
-    }
-  }
-
-  void make_cms() {
-    cms = seastar::make_lw_shared<simple_cms>();
-  }
-
-  void merge_cms(seastar::lw_shared_ptr<simple_cms> ptr) {
-    if (!cms) {
-      make_cms();
-    }
-    if (ptr) {
-      cms->merge(ptr.get());
-    }
   }
 
   /**
@@ -1128,8 +998,6 @@ protected:
       length(other.get_length()),
       loaded_length(other.get_loaded_length()),
       version(other.version),
-      last_transaction_id(other.last_transaction_id),
-      cms(other.cms),
       poffset(other.poffset) {
     // the extent must be fully loaded before CoW
     assert(other.is_fully_loaded());
@@ -1152,8 +1020,6 @@ protected:
       length(other.get_length()),
       loaded_length(other.get_loaded_length()),
       version(other.version),
-      last_transaction_id(other.last_transaction_id),
-      cms(other.cms),
       poffset(other.poffset) {
     // the extent must be fully loaded before CoW
     assert(other.is_fully_loaded());

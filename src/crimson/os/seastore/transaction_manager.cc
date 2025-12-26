@@ -684,8 +684,6 @@ TransactionManager::rewrite_logical_extent(
       // get target rewrite generation
       extent->get_rewrite_generation())->cast<LogicalChildNode>();
     nextent->rewrite(t, *extent, 0);
-    nextent->set_last_transaction_id(extent->get_last_transaction_id());
-    nextent->set_cms(extent->get_cms());
 
     DEBUGT("rewriting meta -- {} to {}", t, *extent, *nextent);
 

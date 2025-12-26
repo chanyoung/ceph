@@ -156,8 +156,6 @@ struct FixedKVInternalNode
 
   void do_on_rewrite(Transaction &t, CachedExtent &extent) final {
     this->parent_node_t::on_rewrite(t, static_cast<node_type_t&>(extent));
-    this->set_last_transaction_id(extent.get_last_transaction_id());
-    this->set_cms(extent.get_cms());
   }
 
   explicit FixedKVInternalNode(ceph::bufferptr &&ptr)
@@ -229,10 +227,7 @@ struct FixedKVInternalNode
 
   CachedExtentRef duplicate_for_write(Transaction&) override {
     assert(delta_buffer.empty());
-    auto ref = CachedExtentRef(new node_type_t(*this));
-    ref->set_last_transaction_id(this->get_last_transaction_id());
-    ref->set_cms(this->get_cms());
-    return ref;
+    return CachedExtentRef(new node_type_t(*this));
   };
 
   void on_replace_prior() final {
@@ -323,11 +318,6 @@ struct FixedKVInternalNode
     right->range = right->get_meta();
     this->adjust_copy_src_dest_on_split(c.trans, *left, *right);
 
-    left->set_last_transaction_id(this->get_last_transaction_id());
-    left->copy_cms(this->get_cms());
-    right->set_last_transaction_id(this->get_last_transaction_id());
-    right->copy_cms(this->get_cms());
-
     return std::make_tuple(
       left,
       right,
@@ -345,9 +335,6 @@ struct FixedKVInternalNode
     replacement->range = replacement->get_meta();
     replacement->adjust_copy_src_dest_on_merge(
       c.trans, static_cast<node_type_t&>(*this), *right);
-
-    replacement->set_last_transaction_id(right->get_last_transaction_id());
-    replacement->merge_cms(right->get_cms());
 
     return replacement;
   }
@@ -388,11 +375,6 @@ struct FixedKVInternalNode
       pivot_idx,
       *replacement_left,
       *replacement_right);
-
-    replacement_left->set_last_transaction_id(this->get_last_transaction_id());
-    replacement_left->set_cms(this->get_cms());
-    replacement_right->set_last_transaction_id(right.get_last_transaction_id());
-    replacement_right->set_cms(right.get_cms());
 
     return std::make_tuple(
       replacement_left,

@@ -143,10 +143,6 @@ public:
     add_present_to_retired_set(ref);
   }
 
-  bool is_hot(laddr_t laddr);
-
-  inline static thread_local uint64_t threshold = 100000;
-
   using extent_cmp_t = read_set_item_t<Transaction>::extent_cmp_t;
   void add_present_to_retired_set(CachedExtentRef ref) {
     assert(ref->get_paddr().is_real_location());
@@ -513,7 +509,6 @@ public:
     }
     get_handle().exit();
     views.clear();
-    laddr_internal_list.clear();
   }
 
   bool did_reset() const {
@@ -676,14 +671,7 @@ private:
     return std::make_pair(exists, it);
   }
 
-  std::vector<CachedExtentRef> laddr_internal_list;
-
-  void push_laddr_internal_list(CachedExtentRef ref);
-
   bool maybe_add_to_read_set_step_1(CachedExtentRef ref) {
-    if (ref->get_type() == extent_types_t::LADDR_INTERNAL) {
-      push_laddr_internal_list(ref);
-    }
     assert(!is_weak());
     assert(ref->is_stable());
     auto [exists, it] = lookup_trans_from_read_extent(ref);

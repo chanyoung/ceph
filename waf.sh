@@ -1,12 +1,14 @@
 #!/bin/bash
 
-PREV_NAND_WRITES=$(nvme ocp smart-add-log /dev/nvme0 | grep "media units written" | awk '{print $7}')
-PREV_HOST_WRITES=$(nvme smart-log /dev/nvme0 | grep "Data Units Written" | awk '{print $5}' | sed 's/,//g')
+DEVICE=0
+
+PREV_NAND_WRITES=$(nvme ocp smart-add-log /dev/nvme${DEVICE} | grep "media units written" | awk '{print $7}')
+PREV_HOST_WRITES=$(nvme smart-log /dev/nvme${DEVICE} | grep "Data Units Written" | awk '{print $5}' | sed 's/,//g')
 
 while true; do
   sleep 300;
-  NAND_WRITES=$(nvme ocp smart-add-log /dev/nvme0 | grep "media units written" | awk '{print $7}')
-  HOST_WRITES=$(nvme smart-log /dev/nvme0 | grep "Data Units Written" | awk '{print $5}' | sed 's/,//g')
+  NAND_WRITES=$(nvme ocp smart-add-log /dev/nvme${DEVICE} | grep "media units written" | awk '{print $7}')
+  HOST_WRITES=$(nvme smart-log /dev/nvme${DEVICE} | grep "Data Units Written" | awk '{print $5}' | sed 's/,//g')
 
   CUR_NAND_WRITES=$((NAND_WRITES - PREV_NAND_WRITES))
   CUR_HOST_WRITES=$((HOST_WRITES - PREV_HOST_WRITES))

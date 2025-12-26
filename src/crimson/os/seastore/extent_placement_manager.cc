@@ -1071,12 +1071,7 @@ RandomBlockOolWriter::do_write(
 #ifdef FDP
     auto type = ex->get_type();
     if (type == extent_types_t::OBJECT_DATA_BLOCK) {
-      laddr_t laddr = ex->template cast<LogicalCachedExtent>()->get_laddr();
-      if (t.is_hot(laddr)) {
-        stream = 4;
-      } else {
-        stream = 5;
-      }
+      stream = 4;
     } else if (type == extent_types_t::LADDR_INTERNAL || type == extent_types_t::LADDR_LEAF) {
       stream = 1;
     } else if (type == extent_types_t::BACKREF_INTERNAL || type == extent_types_t::BACKREF_LEAF) {

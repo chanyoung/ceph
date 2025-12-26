@@ -31,8 +31,8 @@ sleep 1
 # If you run with "-n 4 -p 0,1,2,3", it will be set to 4 RUHs.
 #nvme create-ns /dev/nvme${DEVICE} -s ${TARGET_SIZE} -c ${TARGET_SIZE} -f ${LBAF} -n 8 -p 0,1,2,3,4,5,6,7
 #nvme create-ns /dev/nvme${DEVICE} -s ${TARGET_SIZE} -c ${TARGET_SIZE} -f ${LBAF} -n 4 -p 0,1,2,3
-#nvme create-ns /dev/nvme${DEVICE} -s ${TARGET_SIZE} -c ${TARGET_SIZE} -f ${LBAF} -n 5 -p 0,1,2,3,4
-nvme create-ns /dev/nvme${DEVICE} -s ${TARGET_SIZE} -c ${TARGET_SIZE} -f ${LBAF} -n 6 -p 0,1,2,3,4,5
+nvme create-ns /dev/nvme${DEVICE} -s ${TARGET_SIZE} -c ${TARGET_SIZE} -f ${LBAF} -n 5 -p 0,1,2,3,4
+#nvme create-ns /dev/nvme${DEVICE} -s ${TARGET_SIZE} -c ${TARGET_SIZE} -f ${LBAF} -n 6 -p 0,1,2,3,4,5
 #nvme create-ns /dev/nvme${DEVICE} -s ${TARGET_SIZE} -c ${TARGET_SIZE} -f ${LBAF} -n 7 -p 0,1,2,3,4,5,6
 sleep 1
 nvme attach-ns /dev/nvme${DEVICE} -n 1 -c 1
